@@ -1,0 +1,2143 @@
+Deep Learning Face Attributes in the Wild∗
+Ziwei Liu1 Ping Luo1 Xiaogang Wang2 Xiaoou Tang1
+1
+Department of Information Engineering, The Chinese University of Hong Kong
+2
+Department of Electronic Engineering, The Chinese University of Hong Kong
+
+(a) HOG(landmarks)+SVM
+
+Predicting face attributes in the wild is challenging due
+to complex face variations. We propose a novel deep
+learning framework for attribute prediction in the wild.
+It cascades two CNNs, LNet and ANet, which are finetuned jointly with attribute tags, but pre-trained differently.
+LNet is pre-trained by massive general object categories for
+face localization, while ANet is pre-trained by massive face
+identities for attribute prediction. This framework not only
+outperforms the state-of-the-art with a large margin, but
+also reveals valuable facts on learning face representation.
+(1) It shows how the performances of face localization
+(LNet) and attribute prediction (ANet) can be improved
+by different pre-training strategies. (2) It reveals that
+although the filters of LNet are fine-tuned only with imagelevel attribute tags, their response maps over entire images
+have strong indication of face locations. This fact enables
+training LNet for face localization with only image-level
+annotations, but without face bounding boxes or landmarks,
+which are required by all attribute recognition works. (3)
+It also demonstrates that the high-level hidden neurons of
+ANet automatically discover semantic concepts after pretraining with massive face identities, and such concepts are
+significantly enriched after fine-tuning with attribute tags.
+Each attribute can be well explained with a sparse linear
+combination of these concepts.
+
+Arched Eyebrows Receding Hairline
+
+Smiling
+
+Mustache
+
+Young
+
+true
+
+false
+
+false
+
+false
+
+true
+
+true
+
+true
+
+true
+
+true
+
+true
+
+5 attributes
+
+10 attributes
+
+(b) Our Method
+
+Abstract
+
+(c)
+
+arXiv:1411.7766v3 [cs.CV] 24 Sep 2015
+
+{lz013,pluo,xtang}@ie.cuhk.edu.hk, xgwang@ee.cuhk.edu.hk
+
+20 attributes 40 attributes
+
+Figure 1. (a) Inaccurate localization and alignment lead to prediction
+errors on attributes by existing methods (b) LNet localizes face regions by
+averaging the response maps of attribute filters. ANet predicts attributes
+without alignment (c) Face localization with the averaged response map
+when LNet is trained with different numbers of attributes. (Best viewed in
+color)
+
+Face attributes are beneficial for multiple applications
+such as face verification [15, 2, 25], identification [20], and
+retrieval. Predicting face attributes from images in the wild
+is challenging, because of complex face variations such as
+poses, lightings, and occlusions as shown in Fig.1.
+Attribute recognition methods are generally categorized
+into two groups: global and local methods. Global methods
+extract features from the entire object, where accurate
+locations of object parts or landmarks are not required.
+
+They are not robust to deformations of objects [23]. Recent
+local models [15, 4, 5, 2, 19, 32] first detect object parts
+and extract features from each part. These local features
+are concatenated to train classifiers. For example, Kumar et
+al. [15] predicted face attributes by extracting hand-crafted
+features from ten face parts. Zhang et al. [32] recognized
+human attributes by employing hundreds of poselets [4]
+to align human body parts. These local methods may fail
+when unconstrained face images with complex variations
+are present, which makes face localization and alignment
+difficult. As shown in Fig.1 (a), HOG+SVM fails because
+the faces or landmarks are wrongly localized or misaligned.
+Thus the features are extracted at wrong positions [26].
+Recent research shows that face localization and alignment
+are still not well solved problems, especially in the wild
+condition, although much progress has been achieved in the
+past decade. It is also proved by our experimental result.
+
+∗ This work has been accepted to appear in ICCV 2015. This is the preprinted version. Content may slightly change prior to the final publication.
+
+This work revisits global methods by proposing a novel
+deep learning framework, which integrates two CNNs,
+
+1. Introduction
+
+LNet and ANet, where LNet locates the entire face region
+and ANet extracts high-level face representation from the
+located region. The novelties are in three aspects. Firstly,
+LNet is trained in a weakly supervised manner, i.e. only
+image-level attribute tags of training images are provided,
+making data preparation much easier. This is different from
+training face and landmark detectors, where face bounding
+boxes and landmark positions are required. LNet is pretrained by classifying massive general object categories,
+such that its pre-trained features have good generalization
+capability on handling large background clutters. LNet is
+then fine-tuned by attributes tags. We demonstrate that features learned in this way are effective for face localization
+and also can distinguish subtle differences between human
+faces and analogous patterns, such as a cat face.
+Secondly, ANet extracts discriminative face representation, making attribute recognition from the entire face
+region possible. ANet is pre-trained by classifying massive
+face identities and is fine-tuned by attributes. We show that
+the pre-training step enables ANet to account for complex
+variations in the unconstrained face images.
+Thirdly, within the rough locations of face regions
+provided by LNet, averaging the predictions of multiple
+patches can improve the performance. A simple way is
+to evaluate the feed-forward pass for each single patch.
+However, it is slow and has a lot of redundant computation.
+A novel fast feed-forward scheme is proposed to replace
+patch-by-patch evaluation. It evaluates images with arbitrary sizes with only one-pass feed-forward operation. It
+becomes non-trivial if the filters are locally shared, while
+studies [28, 27] showed that locally shared filters perform
+better in face related tasks. This is solved by proposing an
+interweaved operation.
+Besides proposing new methods, our framework also
+reveals valuable facts on learning face representation. They
+not only motivate this work but also benefit future research
+on face and deep learning. (1) It shows how pre-training
+with massive object categories and massive identities can
+improve feature learning for face localization and attribute
+recognition, respectively. (2) It demonstrates that although
+filters of LNet are fine-tuned by attribute tags, their response
+maps over the entire image have strong indication of face
+location. Good features for face localization should be able
+to capture rich face variations, and more supervised information on these variations improves the learning process.
+The examples in Fig. 1 (a) show that as the number of
+attributes decreases, the localization capability of learned
+neurons gets reduced dramatically. (3) ANet is pre-trained
+with massive face identities. It discloses that the pre-trained
+high-level hidden neurons of ANet implicitly learn and
+discover sematic concepts that are related to identity, such
+as race, gender, and age. It indicates that when a deep
+model is pre-trained for face recognition, it implicitly learns
+
+attributes. The performance of attribute prediction drops
+without this pre-training stage.
+The main contributions are summarized as follows.
+(1) We propose a novel deep learning framework, which
+combines massive objects and massive identities to pre-train
+two CNNs for face localization and attribute prediction,
+respectively. It achieves state-of-the-art attribute classification results on both the challenging CelebFaces [27] and
+LFW [12] datasets, improving existing methods by 8 and
+13 percent, respectively. (2) A novel fast feed-forward
+algorithm for CNN with locally shared filters is devised. (3)
+Our study reveals multiple valuable facts on leaning face
+representation by deep models. (4) We also contribute a
+large facial attribute database with more than eight million
+attribute labels and it is 20 times larger than the largest
+publicly available dataset.
+
+1.1. Related Work
+Extracting hand-crafted features at pre-defined landmarks has become a standard step in attribute recognition
+[9, 15, 4, 2]. Kumar et al. [15] extracted HOG-like features
+on various face regions to tackle attribute classification and
+face verification. To improve the discriminativeness of
+hand-crafted features given a specific task, Bourdev et al.
+[4] built a three-level SVM system to extract higher-level
+information. Deep learning [23, 7, 19, 32, 31, 13, 33, 22, 3]
+recently achieved great success in attribute prediction, due
+to their ability to learn compact and discriminative features.
+Razavian et al. [23] and Donahue et al. [7] demonstrated
+that off-the-shelf features learned by CNN of ImageNet [13]
+can be effectively adapted to attribute classification. Zhang
+et al. [32] showed that better performance can be achieved
+by ensembling learned features of multiple pose-normalized
+CNNs. The main drawback of these methods is that they
+rely on accurate landmark detection and pose estimation in
+both training and testing steps. Even though a recent work
+[31] can perform automatic part localization during test, it
+still requires landmark annotations of the training data.
+
+2. Our Approach
+Framework Overview Fig.2 illustrates our pipeline
+where LNet locates the entire face region in a coarse-tofine manner as shown in (a) and (b), while ANet extracts
+features for attribute recognition as shown in (c).
+Different from existing works that rely on accurate face
+and landmark annotations, LNet is trained in a weakly supervised manner with only image-level annotations. Specifically, it is pre-trained with one thousand object categories
+of ImageNet [6] and fine-tuned by image-level attribute
+tags. The former step accounts for background clutters,
+while the latter step learns features robust to complex
+face variations. Learning LNet in this way not only
+significantly reduces data labeling, but also improves the
+
+n
+
+m
+
+(a) LNeto
+
+(b) LNets
+
+(5)
+
+ho
+
+xo
+
+xf
+
+(c) ANet
+
+(4)
+
+hf
+
+FC
+
+y
+
+xf
+
+(5)
+
+Linear SVM
+Linear SVM
+Linear SVM
+
+hs
+
+Wavy Hair
+No Beard
+High Cheekbones
+Smiling
+
+…
+
+FC
+
+FC
+
+…
+
+FC
+
+xs
+
+(d) Extracting features to predict attributes
+
+Figure 2. The proposed pipeline of attribute prediction (Best viewed in color)
+
+accuracy of face localization. Both LNeto and LNets have
+network structures similar to AlexNet [13], whose hyper
+parameters are specified in Fig.2 (a) and (b) respectively.
+The fifth convolutional layer (C5) of LNeto indicates headshoulders while C5 of LNets indicates faces, with their
+highly responsed regions in their averaged response maps.
+Moreover, the input xo of LNeto is a m × n image, while
+the input xs of LNets is the head-shoulder region, which is
+localized by LNeto and resized to 227 × 227.
+As illustrated in Fig.2 (c), ANet is learned to predict
+attributes y by providing the input face region xf , which is
+detected by LNets and properly resized. Specifically, multiview versions [13] of xf are utilized to train ANet. Furthermore, ANet contains four convolutional layers, where the
+filters of C1 and C2 are globally shared and the filters of C3
+and C4 are locally shared. The effectiveness of local filters
+have been demonstrated in many face related tasks [26, 28].
+To handle complex face variations, ANet is pre-trained by
+distinguishing massive face identities, which facilitates the
+learning of discriminative features.
+Fig.2 (d) outlines the procedure of attribute recognition.
+ANet extracts a set of feature vectors (FCs) by cropping
+overlapping patches on xf . An efficient feed-forward
+algorithm is developed to reduce redundant computation
+in the feature extraction stage. SVMs [8] are trained to
+predict attribute values given each FC. The final prediction
+is obtained by averaging all these values, to cope with small
+misalignment of face localization.
+
+(ILSVRC) 2012 [6], containing 1.2 million training images
+and 50 thousands validation images. All the data is
+employed for pre-training except one third of the validation
+data for choosing hyper-parameters [13]. We augment
+data by cropping ten patches from each image, including
+one patch at the center and four at the corners, and their
+horizontal flips. We adopt softmax for object classification,
+which is optimized by stochastic gradient descent (SGD)
+with back-propagation (BP) [16]. As shown in Fig.3
+(a.2), the averaged response map in C5 of LNeto already
+indicates locations of objects including human faces after
+pre-training.
+
+2.1. Face Localization
+
+Fine-tuning LNet Both LNeto and LNets are fine-tuned
+with attribute tags. Additional output layers are added to
+the LNets individually for fine-tuning and then removed for
+evaluation. LNeto adopts the full image xo as input while
+LNets uses the highly responsed region xs in the averaged
+response map in C5 of LNeto as input, which roughly respond to head-shoulders. The cross-entropy
+loss is used for
+P
+attribute classification,
+i.e.
+L
+=
+y
+log
+p(yi |x) + (1 −
+i=1 i
+
+1
+yi ) log 1 − p(yi |x) , where p(yi = 1|x) = 1+exp(−f
+(x))
+is the probability of the i-th attribute given image x. As
+shown in Fig.3 (a.3), the response maps after fine-tuning
+become much more clean and smooth, indicating that the
+filters learned by attribute tags can detect face patterns with
+complex variations. To appreciate the effectiveness of pretraining, we also include the averaged response map in C5
+of being directly trained from scratch with attribute tags but
+without pre-training in Fig.3 (a.4). It cannot separate face
+regions from background and other body parts well.
+
+The cascade of LNeto and LNets accurately localizes
+face regions by being trained on image-level attribute tags.
+Pre-training LNet Both LNeto and LNets are pretrained with 1, 000 general object categories from the
+ImageNet Large Scale Visual Recognition Challenge
+
+Thresholding and Proposing Windows We show that
+the responses of C5 in LNet are discriminative enough
+to separate faces and background by simply searching a
+threshold, such that a window with response larger than
+this threshold corresponding to face and otherwise is back-
+
+(a.3)
+
+(b)
+
+(a.2)
+
+(a.4)
+
+Percentage of Images
+
+(a.1)
+
+Response on Face Images
+Response on Bg. Images
+
+Brown Hair
+Big Eyes
+Smiling
+
+Left
+
+Frontal
+
+View 1
+
+View N
+
+Male
+Black Hair
+Sunglasses
+
+Attr Config 1
+
+threshold
+...
+
+Attr Config N
+...
+...
+
+(a) single detector (b) multi-view detector (c) face localization by attributes
+
+Maximum Score
+
+Figure 3. (a.1) Original image. (a.2)-(a.4) are averaged response maps
+in C5 of LNeto after pre-training (a.2), fine-tuning (a.3) and directly
+training from scratch with attribute tags but without pre-training (a.4). (b)
+Determine threshold.
+
+ground. To determine the threshold, we select 2000 images,
+each of which contains a single face, and 2000 background
+images from SUN dataset [29]. For each image, EdgeBox
+[34] is adopted to propose 500 candidate windows, each of
+which is measured by a score that sums over its response
+values normalized by its window size. A larger score
+indicates the localized pattern is more likely to be a face.
+Each image is then represented by the maximum score over
+all its windows. In Fig.3 (b), the histogram of the maximum
+scores shows that these scores clearly separate face images
+from background images. The threshold is chosen as the
+decision boundary as shown in Fig.3 (b). More results
+are given in Fig.6 (a), showing that the above strategy can
+precisely localize face within a single test image. Since each
+training image only contains one single face, we localize a
+face region using the window with the largest score during
+training.
+Pruning Multiple Faces within a single Window. For
+some challenging cases in the testing stage, it encounters
+difficulty when multiple faces are presented within a single
+window, such that there may be multiple regions with high
+responses. We predict attributes based one face region
+which generates the largest response1 . Similar to [24], a
+fast density peak identification technique is devised. It
+calculates a special geodesic distance for each position i in
+the response map, di = (ρ2i +σi2 )1/2 , where ρi is the density
+intensity in position i, σi = minj:ρj >ρi (sij ) and sij is the
+spatial distance between i and j. Then density peaks are
+identified by selecting extreme large di . This process can
+be further accelerated, as the averaged response map in C5
+is sparse. We propose the correct window by cropping the
+region with the highest density.
+To understand why rich attribute information enables
+accurate face localization, one could consider the examples
+in Fig.4. If only a single detector [17, 21] is used to
+classify all the positive and negative samples in Fig.4 (a),
+it is difficult to handle complex face variations. Therefore,
+multi-view face detectors [30] were developed in Fig.4 (b),
+i.e. face images in different views are handled by different
+1 In CelebFaces and LFW, it is assumed that each image has a
+“dominant” face, based on which the attribute tags were labeled by users.
+
+Figure 4. Face localization by attributes
+
+detectors. View labels were used in training detectors and
+the whole training set is divided into subsets according to
+views. If views are treated as one type of face attributes,
+learning face representation by predicting attributes with
+deep models actually extends this idea to extreme. As
+shown in Fig.4 (c), a filter (or a group of filters) functions
+as a detector of an attribute. When a subset of neurons
+are activated, they indicate the existence of face images
+with a particular attribute configuration. The neurons at
+different layers can form many activation patterns, implying
+that the whole set of face images can be divided into
+many subsets based on attribute configurations, and each
+activation pattern corresponds to one subset (e.g. ‘pointy
+nose’, ‘rosy cheek’, and ‘smiling’). Therefore, it is not
+surprising that filters learned by attributes lead to effective
+representations for face localization.
+
+2.2. Attribute Prediction
+As shown in Fig.2 (c) and (d), ANet is learned to
+extract features and SVM classifiers are used to predict
+attributes. Specifically, in the pre-training stage, ANet is
+trained by classifying massive face identities. In the finetuning stage, we first extend the localized face region, which
+is properly resized, with a small factor to incorporate more
+context information. Then, multiple patches are cropped
+from the enlarged face region and utilized as inputs of
+ANet. ANet is fine-tuned by attributes to learn the highlevel feature FC. Furthermore, as shown in Fig.2 (d), each
+feature vector is adopted to train SVM classifier for attribute
+prediction. The above strategy is similar to the multiview data augmentation [13], increasing the robustness of
+attribute recognition. In the testing stage, attributes are
+predicted by averaging the SVM scores over all the patches.
+Pre-training of ANet We introduce how to learn discriminative features by pre-training ANet with a large number of identities. We select eight thousand face identities
+from the CelebFaces [27] dataset, where each identity
+has around twenty images. There are over 160 thousand
+training images in total. A simple way to train ANet
+is to classify eight thousand categories with the softmax
+loss. However, it is challenging because the number of
+samples of each identity is limited to maintain the intraclass invariance. To improve intra-class invariance, we
+employ the similarity loss similar to [27, 10]. It decreases
+the distances between samples of the same identity. We
+
+3
+
+2
+1
+
+1
+
+6 4
+5
+
+4
+
+5
+8
+
+3
+6
+9
+
+9
+8
+
+…
+7
+
+(a) global convolution
+
+…
+
+7
+
+2
+
+(b) local convolution
+
+(c) feature extraction with
+interweaved operation
+
+(d) interweaved operation
+
+Figure 5. Detailed pipeline of efficient feature extractions in ANet.
+
+P|D|
+have L = i=1,yi =yj kFCi − FCj k22 , where FCi and FCj
+denote the feature vectors of the i-th and j-th face images
+respectively, and yi = yj indicates the identities of these
+samples are the same. In summary, ANet is pre-trained by
+combining the softmax loss and the similarity loss.
+Efficient Feature Extractions In test, ANet is evaluated
+on multiple patches of the face region as shown in Fig.2 (d),
+leading to redundant convolutional computations because
+of the large overlaps in these patches. When all the filters
+are globally-shared, the computational cost can be reduced
+by applying [11], which convolves the filters in the input
+image and then obtains a feature vector for each patch by
+pooling over the last convolutional layer. Given a simple
+example with one convolutional layer as shown in Fig.5 (a),
+the feature vector FC for each patch (e.g. rectangle in red)
+can be extracted by pooling in the corresponding region of
+the response map h(1) , without evaluating convolutions in
+the input image patch-by-patch. Therefore, it shares the
+convolutions for every patch.
+However, this scheme is not applicable when we have
+more than two convolutional layers whose filters are
+locally-shared. An example is illustrated in Fig.5 (b), where
+each patch is equally divided into 3 × 3 = 9 cells and
+we learn different filters for different cells. To reduce
+computations in the first convolutional layer, each local
+filter can be applied on the entire image, resulting in the
+(1)
+response map with nine channels, i.e. hi and i = 1...9.
+(1)
+The final response map h is obtained by cropping and
+padding the regions (i.e. rectangles in black) in these 9
+channels. As a result, each feature vector FC can be pooled
+from h(1) , without convolving the input image patchby-patch. Nevertheless, since h(1) is corresponded to a
+patch of the input image, the succeeding local convolutions
+have to be handled patch-by-patch, leading to redundant
+computations.
+To this end, we propose an interweaved operation, which
+is a fast feed-forward method for CNN with locally-shared
+filters. Suppose we have four local filters in the next locally
+convolutional layer and each filter is applied on 2 × 2 cells
+of h(1) as shown in (b). These cells are the receptive fields
+
+of the filters, including {1, 2, 4, 5}, {2, 3, 5, 6}, {4, 5, 7, 8},
+and {5, 6, 8, 9}. Instead of directly applying the local filters
+on h1 , the interweaved operation generates an interweaved
+(1)
+map Ii for each filter, where i = 1...4. Each local filter
+is then apply on its corresponding interweaved map. Since
+the interweaved map capturing the entire image, each local
+filter is turned into a global filter such that its computation
+can be shared across different patches.
+(1)
+Specifically, each interweaved map, e.g. I1 , is achieved
+by padding the cells of the corresponding channels in an
+(1)
+interweaved manner, e.g. hi={1,2,4,5} , as shown in Fig.5
+(d). All of the interweaved maps are illustrated in Fig.5
+(c). After that, each of the four local filters is applied on its
+corresponding interweaved map, leading to four response
+(2)
+maps hi , where i = 1...4. As a result, the feature vector
+FC is pooled and concatenated from the receptive fields of
+the filters, which are the rectangles in black as shown in (c).
+Intuitively, instead of padding cells according to the
+receptive fields of all the local filters (e.g. h(1) in (b)),
+which has to be performed in a patch-by-patch way, the
+interweaved operation pads the cells with respect to the
+receptive field of each local filter over the entire image. It
+enables extracting multiple feature vectors with only onepass of feed-forward evaluation. This operation can be
+repeated when more locally convolutional layers are added.
+The proposed feature extraction scheme has achieved 6×
+speedup empirically when compared with patch-by-patch
+scanning. It is applicable to CNNs with local filters and
+compatible to all existing CNN operations.
+
+3. Experiments
+Large-scale Data Collection We construct two face
+attribute datasets, namely CelebA and LFWA, by labeling
+images selected from two challenging face datasets, CelebFaces [27] and LFW [12]. CelebA contains ten thousand
+identities, each of which has twenty images. There are
+two hundred thousand images in total. LFWA has 13, 233
+images of 5, 749 identities. Each image in CelebA and
+LFWA is annotated with forty face attributes and five key
+
+(a)
+
+(b)
+
+(c)
+
+Figure 6. Averaged response maps of LNet, including (a) CelebA, (b) MobileFaces, (c) some failure cases. (Best viewed in color)
+
+True Positive Rates
+
+0.8
+
+0.6
+LNet
+DPM [21]
+ACF Multi-view [29]
+SURF Cascade [17]
+Face++ [1]
+
+0.4
+
+0.2
+0
+
+(c) 1
+Recall Rates (FPPI = 0.1)
+
+(b)
+
+0.1
+0.2
+0.3
+0.4
+False Positive Per Image
+
+0.5
+
+0.6
+
+0.2
+0
+0
+
+LNet
+DPM [21]
+ACF Multi-view [29]
+SURF Cascade [17]
+LNet (w/o pre-training)
+0.2
+
+0.4
+0.6
+Overlap Ratio
+
+0.8
+
+1
+
+(a)
+
+0.8
+
+0.6
+
+0.4
+
+(d) 1
+
+0.8
+
+0.4
+
+1
+
+0.2
+0
+
+Recall Rates (FPPI = 0.1)
+
+True Positive Rates
+
+(a) 1
+
+LNet
+DPM [21]
+ACF Multi-view [29]
+SURF Cascade [17]
+Face++ [1]
+0.4
+0.3
+0.2
+0.1
+False Positive Per Image
+
+Young
+
+Pale Skin
+
+Bangs
+
+Brown Hair
+
+No Beard
+
+Input Image
+
+Male
+
+Receding
+Hairline
+
+Bags
+Under Eyes
+
+Chubby
+
+Wearing
+Necktie
+
+Input Image
+
+Straight
+Hair
+
+Attractive
+
+Wearing
+Lipstick
+
+Wearing
+Earrings
+
+Wearing
+Necklace
+
+(b)
+
+0.5
+
+0.9
+
+Input Image
+
+(c)
+
+0.8
+
+0.7
+
+Figure 9. Attribute-specific regions discovery.
+10
+
+20
+30
+Number of Attributes
+
+40
+
+Figure 7. ROC curves on (a) CelebA (b) MobileFaces. (c) Recall rates
+w.r.t. overlap ratio (F P P I = 0.1). (d) Recall rates w.r.t. number of
+attributes (F P P I = 0.1)
+
+points by a professional labeling company. CelebA and
+LFWA have over eight million and five hundred thousand
+attribute labels, respectively.
+CelebA is partitioned into three parts. Images of the
+first eight thousand identities (with 160 thousand images)
+are used to pre-train and fine-tune ANet and LNet, and
+the images of another one thousand identities (with twenty
+thousand images) are employed to train SVM. The images
+of the remaining one thousand identities (with twenty
+thousand images) are used for testing. LFWA is partitioned
+into half for training and half for testing. Specifically, 6, 263
+images are adopted to train SVM and the remaining images
+for test. When being evaluated on LFWA, LNet and ANet
+are trained on CelebA.
+Methods for Comparisons The proposed method is
+compared with three competitive approaches, i.e. FaceTracer [14], PANDA-w [32], and PANDA-l [32]. FaceTracer extracts HOG and color histograms in several important functional face regions and then trains SVM for
+attribute classification. We extract these functional regions
+referring to the ground truth landmark points. PANDA-w
+and PANDA-l are based on PANDA [32], which was proposed recently for human attribute recognition by ensem-
+
+bling multiple CNNs, each of which extracts features from
+a well-aligned human part. These features are concatenated
+to train SVM for attribute recognition. It is straightforward
+to adapt this method to face attributes, since face parts can
+be well-aligned by landmark points. Here, we consider two
+settings. PANDA-w obtains the face parts by applying the
+state-of-the-art face detection [17] and alignment [26] on
+wild images, while PANDA-l attains the face parts by using
+ground truth landmark points. For fair comparison, all the
+above methods are trained with the same data as ours.
+
+3.1. Effectiveness of the Framework
+This section demonstrates the effectiveness of the framework. All experiments in this section are done on CelebA.
+• LNet
+Performance Comparison We compare LNet with four
+state-of-the-art face detectors, including DPM [21], ACF
+Multi-view [30], SURF Cascade [17], and Face++ [1].
+We evaluate them by using ROC curves when IoU 2 ≥0.5.
+As plotted in Fig.7(a), when F P P I = 0.01, the true
+positive rates of Face++ and LNet are 85% and 93%;
+when F P P I = 0.1, our method outperforms the other
+three methods by 11, 9 and 22 percent respectively. We
+also investigate how these methods perform with respect to
+overlap ratio (IoU ), following [34, 21]. Fig.7(c) shows that
+2 IoU indicates Intersection over Union.
+
+High Resp.
+
+Low Resp.
+
+Low Resp.
+
+High Resp.
+
+Test Image
+
+Activations
+
+Neurons
+Brown Hair Pale Skin Narrow Eyes High Cheek.
+
+(a.1)
+
+Gender
+
+(a.2)
+
+Hair Color
+
+(b.1)
+
+Bangs
+
+(a.3)
+
+Age
+
+(a.4)
+
+Race
+
+(b.2)
+
+Eyeglasses
+
+Mustache
+
+Smiling
+
+Big Nose
+
+(a.5)
+
+Face Shape
+
+(a.6)
+
+Eye Shape
+
+(b.3)
+
+Wear. Hat
+
+Blond Hair Wear. Lipstick Asian
+
+Big Eyes
+
+Black Hair
+
+Figure 8. Visualization of neurons in ANet (a) after pre-training (b) after fine-tuning (Best viewed in color)
+(a)
+
+ANet (FC)
+
+Accuracy
+
+100%
+
+ANet (C4)
+
+Identity-related Attributes
+
+90%
+
+95%
+
+85%
+
+90%
+
+80%
+
+85%
+
+75%
+
+80%
+
+70%
+
+(b)
+
+Male
+
+White
+
+Black
+
+Asian
+
+ANet (After fine-tuning)
+
+ANet (C3)
+
+Identity-non-related Attributes
+
+Blond_Hair
+Gray_Hair
+Pale_Skin
+Blurry
+Wearing_Necktie
+
+Average Accuracy
+
+60%
+50%
+
+Group #5
+5_o_Clock_Shadow
+
+HOG (After PCA)
+
+single best
+performing
+neuron
+100% 90% 80% 70% 60% 50% 40% 30% 20% 10% 0%
+Percentage of Best Performing Neurons Used
+
+Figure 10. (a) Layer-wise comparison of ANet after pre-training (b) Best
+performing neurons analysis of ANet after fine-tuning. Best performing
+neurons are different for different attributes. The proposed accuracies are
+averaged over attributes which select their own subsets of best performing
+neurons.
+
+LNet generally provides more accurate face localization,
+leading to good performance in the subsequent attribute
+prediction.
+Further Analysis LNet significantly outperforms LNet
+(without pre-training) by 74 percent when the overlap
+ratio equals to 0.5, which validates the effectiveness of
+pre-training, as shown in Fig.7(c). We then explore
+the influence of the number of attributes on localization.
+Fig.7(d) illustrates rich attribute information facilitates face
+localization. To examine the generalization ability of LNet,
+we collect another 3, 876 face images for testing, namely
+MobileFaces, which comes from a different source3 and has
+a different distribution from CelebA. Several examples of
+MobileFaces are shown in Fig.6(b) and the corresponding
+ROC curves are plotted in Fig.7(b). We observe that
+LNet constantly performs better and still gains 7 percent
+improvement (F P P I = 0.1) compared with other face
+detectors. Despite some failure cases due to extreme poses
+and large occlusions, LNet accurately localize faces in the
+wild as demonstrated in Fig.6. More results of LNet under
+3 MobileFaces was collected by normal users with mobile phones,
+while CelebA and LFWA collected face images of celebrities taken by
+professional photographers.
+
+Young
+
+Goatee
+
+Wearing_Lipstick
+Brown_Hair
+
+Pointy_Nose
+Rosy_Cheeks
+Oval_Face
+
+Group #6
+
+Receding_Hairline
+
+Bushy_Eyebrows
+Sideburns
+
+Mustache
+
+Wavy_Hair
+Bangs
+
+Wearing_Hat
+Eyeglasses
+
+Bald
+
+Male
+
+No_Beard
+
+Attractive
+
+Black_Hair
+Group #4 Straight_Hair
+
+Group #3
+
+Smiling Wearing Rosy 5oClock
+Hat
+Cheeks Shadow
+
+Group #2
+
+Heavy_Makeup
+
+High_Cheekbones
+Smiling
+
+80%
+70%
+
+Group #1 Mouth_Slightly_Open
+
+Wearing_Earrings
+Wearing_Necklace
+
+Chubby
+Double_Chin
+
+Arched_Eyebrows
+Narrow_Eyes
+Bags_Under_Eyes
+
+Big_Nose
+Big_Lips
+
+Figure 11. Automatic attributes grouping.
+
+different circumstances (lighting, pose, occlusion, image
+resolution, background clutter etc.) are shown in Fig.14.
+Attribute-specific Regions Discovery Different attribute captures information from different region of face.
+We show that LNet automatically learns to discover these
+regions. Given an attribute, by converting fully connected
+layers of LNet into fully convolutional layers following
+[18], we can locate important region of this attribute. Fig.9
+shows some examples. The important regions of some
+attributes are locally distributed, such as ‘Bags Under Eyes’,
+‘Straight Hair’ and ‘Wearing Necklace’, but some are globally distributed, such as ‘Young’, ‘Male’ and ‘Attractive’.
+• ANet
+Pre-training Discovers Semantic Concepts We show
+that pre-training of ANet can implicity discover semantic
+concepts related to face identity. Given a hidden neuron
+at the FC layer of ANet as shown in Fig.2(c), we partition
+the face images into three groups, including the face images
+with high, medium, and low responses at this neuron. The
+face images of each group are then averaged to obtain
+the mean face. We visualize these mean faces for several
+neurons in Fig.8(a). Interestingly, these mean face changes
+smoothly from high response to low response, following a
+high-level concept. Human can easily assign each neuron
+with a semantic concept it measures (i.e. the text in yellow).
+For example, the neurons in (a.1) and (a.4) correspond
+to ‘gender’ and ‘race’, respectively. It reveals that the
+high-level hidden neurons of ANet can implicitly learn
+to discover semantic concepts, even though they are only
+
+Arch. Eyebrows
+
+Attractive
+
+Bags Un. Eyes
+
+Bald
+
+Bangs
+
+Big Lips
+
+Big Nose
+
+Black Hair
+
+Blond Hair
+
+Blurry
+
+Brown Hair
+
+Bushy Eyebrows
+
+Chubby
+
+Double Chin
+
+Eyeglasses
+
+Goatee
+
+Gray Hair
+
+Heavy Makeup
+
+H. Cheekbones
+
+Male
+
+78
+77
+81
+79
+77
+81
+71
+70
+81
+75
+80
+83
+
+76
+71
+79
+77
+73
+79
+65
+63
+80
+72
+79
+83
+
+89
+92
+96
+92
+95
+98
+77
+82
+84
+86
+83
+88
+
+88
+89
+92
+94
+92
+95
+72
+79
+84
+84
+84
+88
+
+64
+61
+67
+63
+66
+68
+68
+64
+73
+70
+72
+75
+
+74
+70
+75
+74
+75
+78
+73
+71
+79
+73
+76
+81
+
+70
+74
+85
+77
+84
+88
+76
+78
+87
+82
+86
+90
+
+80
+81
+93
+86
+91
+95
+88
+87
+94
+90
+94
+97
+
+81
+77
+86
+83
+80
+84
+73
+70
+74
+75
+70
+74
+
+60
+69
+77
+74
+78
+80
+62
+65
+74
+71
+73
+77
+
+80
+76
+86
+80
+85
+90
+67
+63
+79
+69
+79
+82
+
+86
+82
+86
+86
+86
+91
+67
+65
+69
+68
+70
+73
+
+88
+85
+88
+90
+88
+92
+70
+64
+75
+70
+74
+78
+
+98
+94
+98
+96
+96
+99
+90
+84
+89
+88
+92
+95
+
+93
+86
+93
+92
+92
+95
+69
+65
+75
+68
+75
+78
+
+90
+88
+94
+93
+93
+97
+78
+77
+81
+82
+81
+84
+
+85
+84
+90
+87
+85
+90
+88
+86
+93
+89
+91
+95
+
+84
+80
+86
+85
+84
+87
+77
+75
+86
+79
+83
+88
+
+91
+93
+97
+95
+94
+98
+84
+86
+92
+91
+91
+94
+
+Narrow Eyes
+
+No Beard
+
+Oval Face
+
+Pale Skin
+
+Pointy Nose
+
+Reced. Hairline
+
+Rosy Cheeks
+
+Sideburns
+
+Smiling
+
+Straight Hair
+
+Wavy Hair
+
+Wear. Earrings
+
+Wear. Hat
+
+Wear. Lipstick
+
+Wear. Necklace
+
+Wear. Necktie
+
+Young
+
+Average
+
+LFWA
+
+76
+73
+78
+75
+74
+79
+67
+63
+79
+66
+78
+82
+
+Mustache
+
+CelebA
+
+5 Shadow
+LFWA
+
+85
+82
+88
+86
+88
+91
+70
+64
+84
+78
+81
+84
+Mouth S. O.
+
+CelebA
+
+FaceTracer [14]
+PANDA-w [32]
+PANDA-l [32]
+[17]+ANet
+LNets+ANet(w/o)
+LNets+ANet
+FaceTracer [14]
+PANDA-w [32]
+PANDA-l [32]
+[17]+ANet
+LNets+ANet(w/o)
+LNets+ANet
+
+FaceTracer [14]
+PANDA-w [32]
+PANDA-l [32]
+[17]+ANet
+LNets+ANet(w/o)
+LNets+ANet
+FaceTracer [14]
+PANDA-w [32]
+PANDA-l [32]
+[17]+ANet
+LNets+ANet(w/o)
+LNets+ANet
+
+87
+82
+93
+85
+86
+92
+77
+74
+78
+76
+78
+82
+
+91
+83
+93
+87
+91
+95
+83
+77
+87
+79
+87
+92
+
+82
+79
+84
+83
+77
+81
+73
+68
+73
+74
+77
+81
+
+90
+87
+93
+91
+92
+95
+69
+63
+75
+69
+75
+79
+
+64
+62
+65
+65
+63
+66
+66
+64
+72
+66
+71
+74
+
+83
+84
+91
+89
+87
+91
+70
+64
+84
+68
+81
+84
+
+68
+65
+71
+67
+70
+72
+74
+68
+76
+72
+76
+80
+
+76
+82
+85
+84
+85
+89
+63
+61
+84
+70
+81
+85
+
+84
+81
+87
+85
+87
+90
+70
+64
+73
+71
+72
+78
+
+94
+90
+93
+94
+91
+96
+71
+68
+76
+72
+72
+77
+
+89
+89
+92
+92
+88
+92
+78
+77
+89
+82
+88
+91
+
+63
+67
+69
+70
+69
+73
+67
+68
+73
+72
+71
+76
+
+73
+76
+77
+79
+75
+80
+62
+63
+75
+65
+73
+76
+
+73
+72
+78
+77
+78
+82
+88
+85
+92
+87
+90
+94
+
+89
+91
+96
+93
+96
+99
+75
+78
+82
+82
+84
+88
+
+89
+88
+93
+91
+90
+93
+87
+83
+93
+86
+92
+95
+
+68
+67
+67
+70
+68
+71
+81
+79
+86
+81
+83
+88
+
+86
+88
+91
+90
+86
+93
+71
+70
+79
+72
+76
+79
+
+80
+77
+84
+81
+83
+87
+80
+76
+82
+79
+82
+86
+
+81
+79
+85
+83
+83
+87
+74
+71
+81
+76
+79
+84
+
+Table 1. Performance comparison of attribute prediction. (Note that FaceTracer and PANDA-l attains the face parts by using ground truth landmark points.)
+
+optimized for face recognition using identity information
+and attribute labels are not used in pre-training. We also
+observe that most of these concepts are intrinsic to face
+identity, such as the shape of facial components, gender,
+and race.
+To better explain this phenomena, we compare the
+accuracy of attribute prediction using features at different
+layers of ANet right after pre-training. They are FC, C4,
+and C3. The forty attributes are roughly separated into two
+groups, which are identity-related attributes, such as gender
+and race, and identity-non-related attributes, e.g. attributes
+of expressions, wearing hat and sunglasses. We select
+some representative attributes for each group and plot the
+results in Fig.10(a), which shows that the performance of
+FC outperforms C4 and C3 in the group of identity-related
+attributes, but they are relatively weaker when dealing with
+identity-non-related attributes. This is because the top layer
+FC learns identity features, which are insensitive to intrapersonal face variations.
+Fine-tuning Expands Semantic Concepts Fig.8 shows
+that after fine-tuning, ANet can expand these concepts to
+more attribute types. Fig.8(b) visualizes the neurons in the
+FC layer, which are ranked by their responses in descending
+order with respect to several test images. Human can assign
+semantic meaning to each of these neurons. We found that
+a large number of new concepts can be observed. Remark-
+
+ably, these neurons express diverse high-level meanings
+and cooperate to explain the test images. The activations
+of all the neurons are visualized in Fig.8(b), and they are
+sparse. In some sense, attributes presented in each test
+image are explained by a sparse linear combination of these
+concepts. For instance, the first image is described as “a
+lady with bangs, brown hair, pale skin, narrow eyes and high
+cheekbones”, which well matches human perception.
+To validate this, we explore how the number of neurons
+influences attribute prediction accuracies. Best performing
+neurons for each attribute are identified by sorting corresponding SVM weights. Fig.10(b) illusatrates that only
+10% of ANet best performing neurons are needed to achieve
+90% of the original performance of a particular attribute4 .
+In contrast, HOG+PCA does not have the sparse nature
+and need more than 95% features Besides, the best single
+performing neuron of ANet outperforms that of HOG+PCA
+by 25 percent in average prediction accuracy.
+Automatic Attributes Grouping Here we show that the
+weight matrix at the FC layer of ANet can implicitly capture
+relations between attributes. Each column vector of the
+weight matrix can be viewed as a decision hyperplane to
+partition the negatives and positive samples of an attribute.
+By simply applying k-means to these vectors, the clusters
+show clear grouping patterns, which can be interpreted
+4 Best performing neurons are different for different attributes.
+
+Gender
+
+Asian
+
+White
+
+Black
+
+Youth
+
+M. Aged
+
+Senior
+
+Black H.
+
+Blond H.
+
+Bald
+
+No Eye.
+
+Eye.
+
+Mustache
+
+R. Hair.
+
+B. Eye.
+
+A. Eye.
+
+B. Nose
+
+No Beard
+
+R. Jaw
+
+Average
+
+FaceTracer [14]
+POOF [2]
+LNets+ANet
+
+91
+92
+94
+
+87
+90
+85
+
+86
+81
+83
+
+75
+90
+87
+
+66
+71
+80
+
+54
+60
+77
+
+70
+80
+81
+
+66
+67
+86
+
+68
+75
+89
+
+72
+67
+84
+
+84
+87
+85
+
+86
+90
+84
+
+83
+86
+86
+
+76
+72
+83
+
+72
+74
+82
+
+66
+71
+75
+
+65
+68
+79
+
+81
+77
+78
+
+51
+55
+81
+
+73
+76
+83
+
+Table 2. Performance comparison on extended attributes. (Performance are measured by the average of true positive rates and true negative rates.)
+FaceTracer [11]
+
+100%
+
+PANDA-w [26]
+
+PANDA-l [26]
+
+LNets+ANet
+
+95%
+
+Accuracy
+
+90%
+85%
+80%
+75%
+70%
+65%
+60%
+
+Figure 12. Performance comparison of FaceTracer [14], PANDA-w [32],
+PANDA-l [32] and LNets+ANet on LFWA+.
+LNets+ANet
+CelebA
+
+Accuracy
+
+88
+
+84
+
+85
+82
+
+PANDA-l
+LFWA
+
+82
+
+80
+
+1k
+
+3k
+
+10k
+
+76
+
+LFWA+
+
+86
+
+1k
+
+3k
+Dataset Size
+
+10k
+
+77
+
+1k
+
+3k
+
+10k
+
+Figure 13. Performances of different training dataset sizes.
+
+semantically. As shown in Fig.11, Group #1, Group #2 and
+Group #4 demonstrate co-occurrence relationship between
+attributes, e.g. ‘Attractive’ and ‘Heavy Makeup’ have high
+correlation. Attributes in Group #3 share similar color
+descriptors, while attributes in Group #6 correspond to
+certain texture and appearance traits.
+
+3.2. Attribute Prediction
+Performance Comparison The attribute prediction performance is reported in Table.1. On CelebA, the prediction
+accuracies of FaceTracer [14], PANDA-w [32], PANDA-l
+[32], and our LNets+ANet are 81, 79, 85, and 87 percent
+respectively, while the corresponding accuracies on LFWA
+are 74, 71, 81, and 84 percent. Our method outperforms
+PANDA-w by nearly 10 percent. Remarkably, even when
+PANDA-l is equipped with groundtruth bounding boxes
+and landmark positions, our method still achieves 3 percent
+gain. The strength of our method is illustrated not only
+on global attributes, e.g. “Chubby” and “Young”, but also
+on fine-grained facial traits, e.g. “Mastache” and “Pointy
+Nose”. We also report performance on 19 extended attributes and compare our result with [14] and [2]. The evaluation protocol is the same as [2]. In Table 2, LNets+ANet
+
+outperforms them by 10 and 7 percent respectively.
+Further Analysis When compared with [17]+ANet,
+LNets accounts for nearly 6 percentage improvement over
+using an off-the-shelf face detector [17]. We also experiment with the case of providing ANet with localized
+face region by LNets, but without pre-training, denoted as
+LNets+ANet(w/o). The average accuracies have dropped
+4 and 5 percent on CelebA and LFWA, which indicate
+pre-training with massive facial identities helps discover
+semantic concepts.
+Performance on LFWA+ To further examine whether
+the proposed approach can be generalized to unseen attributes, we manually label 30 more attributes for the testing
+images on LFWA and denote this extended dataset as
+LFWA+. To test on these 30 attributes, we directly transfer
+weights learned by deep models to extract features, and only
+re-train SVMs using one third of the images. LNets+ANet
+leads to 8, 10, and 3 percent average gains over the other
+three approaches (FaceTracer, PANDA-w, and PANDA-l).
+It demonstrates that our method learns discriminative face
+representations and has good generalization ability.
+Size of Training Dataset We compare the attribute
+prediction accuracy of the proposed method with the accuracy of PANDA-l, regarding different sizes of training
+datasets. Only the training data of ANet is changed in
+our method for fair comparison. Fig.13 demonstrates that
+LNets+ANet performs well when dataset size is small, but
+the performance of PANDA-l drops significantly.
+Time Complexity For a 300 ∗ 300 image, LNets takes
+35ms to localize face region while ANet takes 14ms to
+extract features on GPU. In contrast, a naı̈ve patch-bypatch scanning needs nearly 80 ms to extract features. Our
+framework has large potential in real-world applications.
+
+4. Conclusion
+This paper has proposed a novel deep learning framework for face attribute prediction in the wild. With carefully
+designed pre-training strategies, our method is robust to
+background clutters and face variations. We devise a new
+fast feed-forward algorithm for locally shared filters to save
+redundant computation, which enables evaluating image
+with arbitrary size in realtime. It allows taking images of
+arbitrary sizes as input without normalization. We have
+also revealed multiple important facts about learning face
+representation, which shed a light on new directions of face
+localization and representation learning.
+
+References
+[1] Face++. http://www.faceplusplus.com/. 6
+[2] T. Berg and P. N. Belhumeur. Poof: Part-based one-vs.-one
+features for fine-grained categorization, face verification, and
+attribute estimation. In CVPR, pages 955–962, 2013. 1, 2, 9
+[3] A. Bergamo, L. Bazzani, D. Anguelov, and L. Torresani.
+Self-taught object localization with deep networks. arXiv
+preprint arXiv:1409.3964, 2014. 2
+[4] L. Bourdev, S. Maji, and J. Malik. Describing people: A
+poselet-based approach to attribute classification. In ICCV,
+pages 1543–1550, 2011. 1, 2
+[5] J. Chung, D. Lee, Y. Seo, and C. D. Yoo. Deep attribute
+networks. In NIPS Workshop on Deep Learning and Unsupervised Feature Learning, volume 3, 2012. 1
+[6] J. Deng, W. Dong, R. Socher, L.-J. Li, K. Li, and L. FeiFei. Imagenet: A large-scale hierarchical image database. In
+CVPR, pages 248–255, 2009. 2, 3
+[7] J. Donahue, Y. Jia, O. Vinyals, J. Hoffman, N. Zhang,
+E. Tzeng, and T. Darrell. Decaf: A deep convolutional
+activation feature for generic visual recognition. arXiv
+preprint arXiv:1310.1531, 2013. 2
+[8] R.-E. Fan, K.-W. Chang, C.-J. Hsieh, X.-R. Wang, and C.J. Lin. Liblinear: A library for large linear classification.
+JMLR, 9:1871–1874, 2008. 3
+[9] A. Farhadi, I. Endres, D. Hoiem, and D. Forsyth. Describing
+objects by their attributes. In CVPR, pages 1778–1785, 2009.
+2
+[10] R. Hadsell, S. Chopra, and Y. LeCun. Dimensionality
+reduction by learning an invariant mapping. In CVPR,
+volume 2, pages 1735–1742, 2006. 4
+[11] K. He, X. Zhang, S. Ren, and J. Sun. Spatial pyramid pooling
+in deep convolutional networks for visual recognition. In
+ECCV, pages 346–361. 2014. 5
+[12] G. B. Huang, M. Ramesh, T. Berg, and E. Learned-Miller.
+Labeled faces in the wild: A database for studying face
+recognition in unconstrained environments. Technical Report 07-49, University of Massachusetts, Amherst, October
+2007. 2, 5
+[13] A. Krizhevsky, I. Sutskever, and G. E. Hinton. Imagenet
+classification with deep convolutional neural networks. In
+NIPS, pages 1097–1105, 2012. 2, 3, 4
+[14] N. Kumar, P. Belhumeur, and S. Nayar. Facetracer: A search
+engine for large collections of images with faces. In ECCV,
+pages 340–353. 2008. 6, 8, 9
+[15] N. Kumar, A. C. Berg, P. N. Belhumeur, and S. K. Nayar.
+Attribute and simile classifiers for face verification. In ICCV,
+pages 365–372, 2009. 1, 2
+[16] Y. LeCun, B. Boser, J. S. Denker, D. Henderson, R. E.
+Howard, W. Hubbard, and L. D. Jackel. Handwritten digit
+recognition with a back-propagation network. In NIPS, 1990.
+3
+[17] J. Li and Y. Zhang. Learning surf cascade for fast and
+accurate object detection. In CVPR, pages 3468–3475, 2013.
+4, 6, 8, 9
+[18] J. Long, E. Shelhamer, and T. Darrell. Fully convolutional
+networks for semantic segmentation. In CVPR, 2015. 7
+
+[19] P. Luo, X. Wang, and X. Tang. A deep sum-product
+architecture for robust facial attributes analysis. In ICCV,
+pages 2864–2871, 2013. 1, 2
+[20] O. K. Manyam, N. Kumar, P. Belhumeur, and D. Kriegman.
+Two faces are better than one: Face recognition in group
+photographs. In IJCB, pages 1–8, 2011. 1
+[21] M. Mathias, R. Benenson, M. Pedersoli, and L. Van Gool.
+Face detection without bells and whistles. In ECCV, pages
+720–735. 2014. 4, 6
+[22] M. Oquab, L. Bottou, I. Laptev, and J. Sivic. Is object
+localization for free?–weakly-supervised learning with convolutional neural networks. In CVPR, pages 685–694, 2015.
+2
+[23] A. S. Razavian, H. Azizpour, J. Sullivan, and S. Carlsson.
+Cnn features off-the-shelf: an astounding baseline for recognition. arXiv preprint arXiv:1403.6382, 2014. 1, 2
+[24] A. Rodriguez and A. Laio. Clustering by fast search and find
+of density peaks. Science, 344(6191):1492–1496, 2014. 4
+[25] F. Song, X. Tan, and S. Chen. Exploiting relationship
+between attributes for improved face verification. CVIU,
+122:143–154, 2014. 1
+[26] Y. Sun, X. Wang, and X. Tang. Deep convolutional network
+cascade for facial point detection. In CVPR, pages 3476–
+3483, 2013. 1, 3, 6
+[27] Y. Sun, X. Wang, and X. Tang. Deep learning face
+representation by joint identification-verification. In NIPS,
+2014. 2, 4, 5
+[28] Y. Taigman, M. Yang, M. Ranzato, and L. Wolf. Deepface:
+Closing the gap to human-level performance in face verification. In CVPR, pages 1701–1708, 2014. 2, 3
+[29] J. Xiao, J. Hays, K. A. Ehinger, A. Oliva, and A. Torralba.
+Sun database: Large-scale scene recognition from abbey to
+zoo. In CVPR, pages 3485–3492, 2010. 4
+[30] B. Yang, J. Yan, Z. Lei, and S. Z. Li. Aggregate channel
+features for multi-view face detection. In IJCB, pages 1–8,
+2014. 4, 6
+[31] N. Zhang, J. Donahue, R. Girshick, and T. Darrell. Partbased r-cnns for fine-grained category detection. In ECCV,
+pages 834–849. 2014. 2
+[32] N. Zhang, M. Paluri, M. Ranzato, T. Darrell, and L. Bourdev.
+Panda: Pose aligned networks for deep attribute modeling. In
+CVPR, 2014. 1, 2, 6, 8, 9
+[33] B. Zhou, A. Khosla, A. Lapedriza, A. Oliva, and A. Torralba.
+Object detectors emerge in deep scene cnns. In ICLR, 2015.
+2
+[34] C. L. Zitnick and P. Dollár. Edge boxes: Locating object
+proposals from edges. In ECCV, pages 391–405. 2014. 4, 6
+
+Figure 14. More results of LNet averaged response maps. (Best viewed in color)
+
+

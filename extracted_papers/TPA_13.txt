@@ -1,0 +1,88 @@
+Face Recognition in the Wild
+Computer Vision (CS6350)
+TPA - 13
+
+1.​ Problem Statement
+Face recognition is one of the most important tasks in pattern recognition and computer vision.
+Although face recognition systems have achieved impressive performance in recent years, the task
+of face recognition in the wild remains challenging, especially when faces are captured under
+non-ideal conditions, such as within crowds, when the face is occluded[2] or under non-ideal
+illumination, as is common in real-world scenarios. Other applications can include pose invariant
+face recognition, in the presence of background clutter.
+
+2.​ Input
+Image containing a face or multiple faces in a non-ideal condition as mentioned above.
+For example,
+
+3.​ Output
+Output image with bounding box on the person(s) detected along with his/her name (if
+available) else ‘unknown’ along with a confidence score of predicting each label.
+
+Example 1:
+
+Input Image:
+
+Output Image:
+
+Example 2:
+
+Input Image:
+
+Output Image:
+
+Example 3:
+
+Input Image:
+
+Output Image:
+
+​
+
+4.​ Dataset
+●​ Webface-OCC [1]: Webface-OCC is a simulated occlusion face recognition dataset, covering
+804,704 face images of 10,575 subjects. Link
+●​ LFW [9]: The LFW dataset contains 13,233 images of faces collected from the web. This dataset
+consists of the 5749 identities with 1680 people with two or more images. Link
+●​ CelebA [10]: CelebFaces Attributes dataset contains 202,599 face images of the size 178×218
+from 10,177 celebrities, each annotated with 40 binary labels indicating facial attributes like
+hair color, gender and age. Link
+Note: Databases are just given for reference purposes. You are free to choose other well-known face
+datasets for this task.
+
+5.​ References
+​
+
+1.​ Huang, B., Wang, Z., Wang, G., Jiang, K., Zeng, K., Han, Z., ... & Yang, Y. (2021, June). When
+face recognition meets occlusion: A new benchmark. In ICASSP 2021-2021 IEEE
+International Conference on Acoustics, Speech and Signal Processing (ICASSP) (pp.
+4240-4244). IEEE.
+2.​ Zeng, D., Veldhuis, R., & Spreeuwers, L. (2021). A survey of face recognition techniques
+under occlusion. IET biometrics, 10(6), 581-606.
+3.​ Kim, Yonghyun, Wonpyo Park, and Jongju Shin. "BroadFace: Looking at tens of thousands of
+people at once for face recognition." European Conference on Computer Vision. Cham: Springer
+International Publishing, 2020.
+4.​ RoyChowdhury, Aruni, et al. "Improving face recognition by clustering unlabeled faces in the
+wild." Computer Vision–ECCV 2020: 16th European Conference, Glasgow, UK, August
+23–28, 2020, Proceedings, Part XXIV 16. Springer International Publishing, 2020.
+5.​ "D2SC-GAN: Dual Deep-Shallow Channeled Generative Adversarial Network, for Resolving
+Low-resolution Faces for Recognition in Classroom scenarios"; Avishek Bhattacharjee and
+Sukhendu Das; In IEEE Transactions on Biometrics, Behavior, and Identity Science; vol. 2, no.
+3, pp. 223-234, July 2020;DOI: 10.1109/TBIOM.2020.2983524
+6.​ "Curricularface: adaptive curriculum learning loss for deep face recognition." ​
+the IEEE/CVF conference on computer vision and pattern ​recognition. 2020.
+
+proceedings of
+
+7.​ Zhao, Jian, et al. "Towards pose invariant face recognition in the wild." Proceedings of the
+IEEE conference on computer vision and pattern recognition. 2018.
+
+8.​ Williford, J. R., May, B. B., & Byrne, J. (2020, August). Explainable face recognition. In
+European conference on computer vision (pp. 248-263). Cham: Springer International
+Publishing.
+9.​ Huang, G. B., Mattar, M., Berg, T., & Learned-Miller, E. (2008, October). Labeled faces in the
+wild: A database forstudying face recognition in unconstrained environments. In Workshop on
+faces in'Real-Life'Images: detection, alignment, and recognition.
+10.​Liu, Z., Luo, P., Wang, X., & Tang, X. (2015). Deep learning face attributes in the wild. In
+Proceedings of the IEEE international conference on computer vision (pp. 3730-3738)
+
+

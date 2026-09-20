@@ -1,0 +1,1091 @@
+IEEE TRANSACTIONS ON BIOMETRICS, BEHAVIOR, AND IDENTITY SCIENCE, VOL. 2, NO. 3, JULY 2020
+
+223
+
+D2SC-GAN: Dual Deep-Shallow Channeled
+Generative Adversarial Network, for Resolving
+Low-Resolution Faces for Recognition
+in Classroom Scenarios
+Avishek Bhattacharjee
+
+and Sukhendu Das , Senior Member, IEEE
+
+Abstract—Face Recognition using convolutional neural
+networks have achieved considerable success in constrained
+environments in the recent past. However, the performance of
+these methods deteriorates in case of mismatch of training and
+test distributions, under classroom/surveillance scenarios. These
+test (probe) samples suffer from degradations such as noise,
+poor illumination, pose variations, occlusion, low-resolution
+(LR), blur as well as aliasing, when compared to the crisp, rich
+training (gallery) set, comprising mostly of high-resolution (HR)
+mugshot images captured in laboratory settings. To cope with
+this scenario, we propose a novel dual deep-shallow channeled
+generative adversarial network (D2SC-GAN) which performs
+supervised domain adaptation (DA) by mapping LR degraded
+probe samples to their corresponding HR gallery-like counterparts to perform closed-set face recognition. D2SC-GAN uses
+a multi-component loss function comprising of multi-resolution
+patchwise MSE and normalized chi-squared distance loss
+functions, along with a Kullback-Leibler divergence based loss
+function. Moreover, we propose a novel classroom face dataset
+called the Indian Classroom Face Dataset (ICFD), which, to
+the best of our knowledge, is a first of its kind and will be
+helpful to explore the challenges of face recognition when
+used for automatically recording the attendance in classroom
+conditions. The proposed network achieves superior results
+on five real-world face datasets when compared with recent
+state-of-the-art deep as well as shallow supervised domain
+adaptation (DA), super-resolution (SR), and degraded face
+recognition (DFR) methods, which show the effectiveness of our
+proposed method.
+Index Terms—Face recognition, face generation, generative
+adversarial networks, convolutional neural networks, classroom FR.
+
+I. I NTRODUCTION
+ACE Recognition (FR) is a well sought out problem in
+the fields of Computer Vision (CV) and Deep Learning
+(DL). Although conventional solutions to FR [1], [2], [3],
+
+F
+
+Manuscript received October 20, 2019; revised January 25, 2020; accepted
+March 2, 2020. Date of publication March 30, 2020; date of current version June 23, 2020. This article was recommended for publication by
+Associate Editor T. Hassner upon evaluation of the reviewers’ comments.
+(Corresponding author: Sukhendu Das.)
+The authors are with the Visualization and Perception Laboratory,
+Department of Computer Science and Engineering, IIT Madras, Chennai
+600036, India (e-mail: avi@cse.iitm.ac.in; sdas@iitm.ac.in).
+This article has supplementary downloadable material available at
+http://ieeexplore.ieee.org, provided by the author.
+Digital Object Identifier 10.1109/TBIOM.2020.2983524
+
+[4], [5], [6] work well in constrained scenarios, they fail to
+perform well in situations where the training (gallery) and
+test (probe) data do not have similar distributions, such as in
+classroom and surveillance settings. There have been various
+attempts [7], [8], [9], [10] to solve the aforementioned problems by employing the concept of Domain Adaptation (DA).
+However, the performance of these methods leaves significant
+room for improvement. Although recent DL-based FR algorithms [11], [12], [13], [14], [15], [16] have achieved very high
+accuracy even in-the-wild cases, they fail to perform well in
+such real-world scenarios.
+Deep Convolutional GAN [17] (DCGAN) first introduced as
+a convolutional architecture led to improved visual quality in
+Computer Vision (CV) applications. The BEGAN model [18]
+utilizes a new equilibrium enforcing method paired with
+a loss derived from the Wasserstein distance for training
+auto-encoder based Generative Adversarial Networks. It also
+provides a new approximate convergence measure, fast and
+stable training and high visual quality. While earlier variants of GAN lacked an analytical measure of convergence,
+Wasserstein GANs [19] (WGANs) recently introduced a loss
+function that acts as a measure of convergence. However,
+in their implementation, this comes at the expense of slow
+training, but with the benefits of stability and better mode of
+coverage [19]. The image-to-image translation method [20]
+proposed by Isola et al., makes use of a conditional GAN
+architecture to generate a crisp image from an input image
+conditioned on a latent vector input. The StarGAN model [10]
+proposed by Choi et al. performs image-to-image translation across multiple domains by making use of a domain
+discriminator.
+The DA-GAN model proposed by Zhao et al. [21], [22]
+performs identity-preserving refinement of the output from
+a face simulator (3D face model) using dual-agents for the
+task of face recognition. The FaceID-GAN model proposed
+by Shen et al. [23] makes use of additional classifier as the
+third player to synthesize identity-preserving faces at various
+pose angles for input face verification. However, the proposed
+models in [21], [22], and [23] perform pose invariant face
+recognition by first synthesizing frontal faces from input profile faces, whereas our proposed method additionally deals
+with other forms of degradation such as blur, poor illumination, and occlusion, which necessitates the incorporation of
+
+2637-6407 c
+ 2020 IEEE. Personal use is permitted, but republication/redistribution requires IEEE permission.
+See https://www.ieee.org/publications/rights/index.html for more information.
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+224
+
+IEEE TRANSACTIONS ON BIOMETRICS, BEHAVIOR, AND IDENTITY SCIENCE, VOL. 2, NO. 3, JULY 2020
+
+domain adaptation into our proposed framework. Thus, our
+method essentially performs a different and more difficult task
+than the methods proposed in the works mentioned above.
+The compact network proposed by Sun et al. [14], [24] uses
+an ensemble of 25 networks, each operating on a distinct face
+patch. The FaceNet model proposed by Schroff et al. [13]
+uses a deep CNN to directly optimize the embedding (features) itself, based on a triplet loss formulated by a triplet
+mining method. DeepFace proposed by Parkhi et al. [12]
+uses a Siamese network to train on the large-scale face
+datasets. The work done by Chen et al. in [25] shows that
+deep neural networks learn non-linear representations that can
+provide invariance to the different variations amongst data
+samples. Other significant works in this area are [11], [26],
+[27], which use CNN for object recognition tasks. The SMLMFKC method proposed by Banerjee and Das [28] employs
+an optimal feature-kernel combination for adaptation to the
+target domain. Deep Adaptation Network (DAN) proposed
+by Long and Wang [29] performs domain adaptation by
+minimizing the distance between the means of source and
+target domain. FV_DCNN [30] proposed by Chen et al. combines Fisher vector representations with deep-CNN features for
+robust face recognition and verification tasks. The work in [31]
+proposes a unified supervised domain adaptation framework
+using a Siamese network that finds a subspace which semantically aligns the source and target distributions and maximally
+separates their classes. The work proposed by Banerjee and
+Das [8] employs a novel 3-stage mutually exclusive training
+algorithm for deep domain adaptation to solve the problem of
+degraded FR. The GAN-based approach proposed in [9] makes
+use of a novel multiscale reconstruction loss to map the target
+domain samples to the source domain to perform FR.
+The work by Jiang et al. [32] employs a missing intensity
+interpolation method using smooth regression with local structure prior (SRLSP) to perform super-resolution (SR) of face
+images. The Super-Identity Convolutional Neural Network
+(SICNN) method proposed by Zhang et al. [33] performs
+face hallucination by generating high-resolution (HR) face
+with its identity close to the real identity of the input lowresolution face by employing the super-identity loss. The
+method proposed by Li et al. [34] utilizes a GAN-pretraining
+approach to further improve the performance of existing face
+recognition algorithms. The Deep Coupled ResNet (DCR)
+model proposed by Lu et al. [35] makes use of a single trunk
+and two branch networks to minimize the difference between
+the feature distribution of high and low resolution face images.
+In this paper we propose a novel Generative Adversarial
+Network-based method for supervised Domain Adaptation,
+called Dual Deep-Shallow Channeled Generative Adversarial
+Network (D2SC-GAN), which first generates HR (140 ×
+140 px.) gallery-like samples from LR (35 × 35 px.) probe
+samples given as input, which are then recognized using
+an auxiliary discriminator (in closed-set FR settings) [9],
+[36]. The proposed model makes use of a novel dual
+channel generator (a shallow-deep pair) network, where
+the shallow and deep channels capture the low and high
+frequency components respectively, of the LR probe (input)
+images to generate corresponding HR gallery-like image
+
+samples. Capturing both the frequency ranges ensure the
+improvement in contrast and enhancement of the features on
+the discriminative parts of the probe samples while creating super-resolved face samples. To achieve this task, the
+network minimizes a novel “Multi-resolution reconstruction
+(MRR)” loss function, consisting of “Multi-Resolution Patchwise Mean squared error (MR_PMSE)” and Normalized χ 2
+distance (NCD) loss components. The generator network also
+minimizes the negative of a “Kullback-Leibler divergence
+(KLD)” based loss component in the objective function. The
+MR_PMSE, by its formulation, captures holistic as well as
+pixel-level differences between the gallery and probe sets.
+The KLD loss ensures that the pair of generators correctly
+capture the different frequency components in the input classroom/surveillance face images over both the channels. Finally,
+the NCD loss ensures correct color reproduction in the
+generated samples.
+Additionally, we also propose the Indian Classroom Face
+Dataset (ICFD) which consists of images of 84 subjects
+captured in both controlled laboratory (for training) and unconstrained classroom settings (for probes). To the best of our
+knowledge, this dataset is the first of its kind and will help
+researchers to explore the challenges present in performing
+face recognition in unconstrained classroom settings for the
+purpose of classroom attendance and search. Extensive experimentations and ablation studies performed on 4 other realworld face datasets reveal the effectiveness of our proposed
+D2SC-GAN model.
+II. P ROPOSED M ETHOD
+The overall architecture of the proposed model is illustrated
+in Fig. 1. The network consists of two generators (shallow and
+deep) and a discriminator. The motivation of using two generator architectures comes from [37], which says that shallow
+networks inherently capture the low-frequency components
+of the image, whereas the deep networks capture the details
+(high-frequency components) in the images. Thus, a combination of these two networks when used for image SR provides
+better results when compared to that using a single generator
+network. We exploit this idea using two generator modules, a
+shallow generator GS and a deep generator GD for the purpose
+of reconstructing HR gallery-like face images from input LR
+probe faces. The discriminator D performs two tasks, identifying when the input image is fake or real (i.e., generated
+or ground-truth) and classifying the input image to obtain the
+class (ID). The individual components of the networks are
+explained in details subsequently.
+The architecture of the shallow generator model (GS ) is
+shown in Fig. 2. The details of each layer is given in the
+color coded diagram. The CONV_2D_N[(f , f ), #F] denotes
+the N th 2D convolution layer having F number of f × f filters. DENSE_N[D] represents the N th Linear layer of D nodes.
+RESHAPE[(m, n), #N] operation reshapes the previous layer
+output into a tensor of shape Rm×n×N , while the FLATTEN
+operation transforms the previous layer output into a single dimensional tensor. UPSAMPLING_2D operation performs
+unpooling on the previous layer output and is further detailed
+in [38].
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+BHATTACHARJEE AND DAS: D2SC-GAN: DUAL DEEP-SHALLOW CHANNELED GENERATIVE ADVERSARIAL NETWORK
+
+225
+
+Fig. 1. The overall architecture of the proposed D2SC-GAN method. IP refers to the probe images provided as input to GS and GD , which are the shallow
+and deep generator networks. The output of these two networks is averaged to obtain IG , which is passed to the discriminator D, which distinguishes real
+(IGal ) from fake/synthesized images (IG ) along with the classification of generated images.
+
+Fig. 2.
+
+Architecture details of the shallow generator GS .
+
+The architecture of the deep generator model (GD ) is shown
+in Fig. 3. The notations used in this diagram have been
+described in the previous paragraph. An appreciably larger
+depth of the architecture is purposefully provided as it is
+required to capture finer details of face image using highfrequency components. The deep and shallow networks help
+to capture the high and low-frequency components of the
+generated image respectively, ensuring superior reconstruction
+performance of the proposed model.
+It may be noted that the proposed architectural model
+for the generator should be treated as a concept, and the
+researchers may explore different variations of the generator
+architectures available in literature [39], [40] to seek better results. The architecture details presented here has been
+decided empirically after rigorous experimentations.
+The discriminator model (D) architecture is shown in Fig. 4.
+The MAXPOOLING_2D_N[H, W] as shown in the figure performs the N th maxpool operation over a window of size H×W.
+
+Fig. 3.
+
+Architecture details of the deep generator model GD .
+
+The network performs two tasks: (i) identify the input image
+as real or fake (corresponding to output branch Dbin ) and
+(ii) classify the input image into the corresponding classes
+(Dcls ).
+III. L OSS F UNCTIONS FOR D2SC-GAN
+The D2SC-GAN model minimizes a multi-objective loss
+function during training. The individual loss functions are
+described in the following sections, followed by the formulation of overall loss function of the proposed D2SC-GAN
+model.
+A. Categorical Cross Entropy Loss
+The categorical cross-entropy [41] loss function is used to
+train deep neural networks having sigmoid outputs for the task
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+226
+
+IEEE TRANSACTIONS ON BIOMETRICS, BEHAVIOR, AND IDENTITY SCIENCE, VOL. 2, NO. 3, JULY 2020
+
+C. Kullback-Leibler Divergence Based Loss
+
+Fig. 4. Architectural details of the auxiliary discriminator model D. It performs the task of identifying real image from generated (fake) one, along with
+classifying the generated images to the corresponding identities.
+
+Algorithm 1: Multi-Resolution Reconstruction (MRR)
+Loss
+B )
+function Lmrr (IGB , IGal
+B ← 20; Lmrr ← 0
+B } do
+foreach {IG , IGal } in {IGB , IGal
+Lncd := NCD(h(IG ), h(IGal ))
+Lmrp := MR_PMSE(IG , IGal )
+L +L
+Lmrr := Lmrr + ncd 2 mrp
+Lmrr
+Lavg := BATCH_SIZE
+return Lavg
+
+Lcxe y, y0
+
+
+
+where, X and Y denotes the two images (converted to
+grayscale before computation), h(·) returns
+√ 64-dimensional
+histogram of the input image, M = h(X) ◦ h(Y) where
+◦ denotes element-wise multiplication operator of two vectors, and Kullback-Leibler Divergence [42] measure K(·, ·) is
+defined as:
+L
+
+Qj
+(3)
+Pj log
+K(P, Q) = −
+Pj
+j=1
+
+of classification. This loss function is defined as:
+
+
+As the proposed architecture consists of both shallow
+and deep networks which captures the low and highfrequency components of the images respectively, we propose
+a Kullback-Leibler divergence (KLD) based loss function,
+which is maximized (equivalent to minimization of negative
+of the loss). While the popular Jensen-Shannon divergence
+loss ensures that both the channels learn different aspects of
+an image (without knowing whether both channels are actually
+involved in the reconstruction task), the nature of the proposed
+loss function ensures that both channels have equal participation for generation of the HR gallery-like samples from
+the input LR probe images, taking advantage of the inherent nature of the shallow and deep models to capture low and
+high frequency components of an image respectively. The loss
+function is given as:
+
+1  2
+K (h(X), M) + K 2 (h(Y), M)
+Lkld (h(X), h(Y)) =
+2
+− K(h(X), M) − K(h(Y), M)1 (2)
+
+n
+ 
+
+
+1  (i)
+(i)
+y0 ln y(i) + 1 − y0 ln 1 − y(i)
+=−
+n
+i=1
+
+(1)
+where, y = {y(1) , . . . , y(n) } is the predicted sigmoid output
+of the neural network corresponding to the input images, and
+(1)
+(n)
+y0 = {y0 , . . . , y0 } is the corresponding actual labels for the
+same input samples.
+B. Multi-Resolution Reconstruction (MRR) Loss
+We propose a novel Multi-resolution reconstruction (MRR)
+loss which enables the generator to perform the task of generating gallery-like crisp high-resolution (HR) images from the
+input low-resolution (LR) probe samples. The purpose of this
+loss function is to ensure accurate reconstruction of the face
+by focusing on minute details as well as the overall structure
+of the generated face. The outline of evaluating the proposed
+B refer to the genloss is shown in Algorithm 1. IGB and IGal
+erated and corresponding ground-truth gallery images having
+batch size B. The individual images of the batch are denoted
+by IG and IGal respectively. The MR_PMSE loss function,
+defined later in Section III-E, ensures preservation of minute
+details along with the overall facial layout by incorporating a
+novel multi-resolution approach. The NCD loss (Section III-D)
+applied channel-wise, ensures correct color reproduction in the
+generated images, consistent with the gallery images.
+
+where, P and Q denotes vectors from two different distributions with same vector length L.
+D. Normalized χ 2 Distance Loss
+It has been empirically found that the images generated
+by the MR_PMSE loss are not always color correct, having
+changes in skin tone and hair color, which is undesirable in
+any generated image. To overcome this issue, we propose the
+Normalized χ 2 Distance (NCD) loss. The χ 2 distance [43],
+[44] is a well-known metric useful for finding the difference
+between histograms. We employ this metric to produce color
+correct facial images by minimizing the χ 2 distance between
+the 2 -normalized channel-wise histograms of the generated
+and the ground-truth images. The loss is defined as:
+|C| |b|
+
+Lncd (h(X), h(Y)) =
+
+1   (h(X c )[i] − h(Y c )[i])2
+2|b||C|
+(h(X c )[i] + h(Y c )[i])
+c=1 i=1
+
+(4)
+where, |C| denotes the number of channels in the input image,
+X c and Y c denotes the channel c of the two images X and Y,
+h(·) returns |b|-binned 2 -normalized histogram of the input
+image channel and h(·)[i] is the ith element in the |b|-binned
+histogram.
+E. Multi-Resolution Patch-Wise MSE Loss
+Inspired by the Patch-wise MSE (PMSE) loss as proposed
+by [9], we introduce a novel multi-resolution Patch-wise MSE
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+BHATTACHARJEE AND DAS: D2SC-GAN: DUAL DEEP-SHALLOW CHANNELED GENERATIVE ADVERSARIAL NETWORK
+
+227
+
+Fig. 5. Few samples from the probe set of ICFD exhibiting: (a) poor illumination with low contrast/resolution, (b) blur, (c) occlusion and (d) pose variations
+present in the dataset. The samples in red outline indicate faces captured using a mobile (Samsung S9) camera. Figure best viewed in color.
+
+(MR_PMSE) loss in which we extract patches at various resolution (small to large) from both generated and ground truth
+image to calculate the mean-squared error between them. It is
+worth noting that while the MSE between a pair of the small
+patches ensures that details of the image are preserved, the
+MSE between the large patches preserves the holistic layout
+of the generated faces. The MSE between two images im1 and
+im2 , is calculated as:
+MSE(im1 , im2 ) =
+
+|C| |im
+1 | |im
+1|
+
+
+
+
+(i,j,k)
+
+im1
+
+(i,j,k) 2
+
+− im2
+
+(5)
+
+i=1 j=1 k=1
+
+where, |C| & |im1 | specifies the number of channels and pixels
+across height/width (assuming both are same for experimental purposes) for the input image. im(i,j,k) refers to the pixel
+located at position (j, k) in the channel i of the image im.
+The outline for evaluating MR_PMSE along with the values
+of the hyper-parameters used, are detailed in Appendix A of
+the supplementary document.
+IV. OVERALL L OSS F UNCTIONS OF
+P ROPOSED D2SC-GAN
+The generator of the proposed D2SC-GAN minimizes the
+following loss function:
+Ladv
+, IG )
+G (IP , IGal , IG1 , IG2
+= Lcxe Dbin (IG ), 1 + Lcxe (Dcls (IG ), y)
++ Lmrr (IG , IGal ) − Lkld (h(IG1 ), h(IG2 ))
+
+Fig. 6. Few samples from the the Gallery set of ICFD showing variations in
+yaw and pitch angles. Samples in the 1st row shows variations in yaw alone,
+while those in the 2nd row exhibits variations in yaw as well as pitch angles.
+Figure best viewed in color.
+
+(6)
+
+where, IP indicates the probe samples used as input to GS
+and GD with y as the corresponding label, IGal denotes the
+gallery samples of the dataset, IG1 and IG2 are the resultant
+outputs from the two generators GS and GD respectively (with
+IP as input), while their element-wise average is denoted by
+IG , subsequently called enhanced-probes. Lmrr (·, ·) is defined
+in Algorithm 1, Lkld (·, ·) has been previously defined in equation (2) and Lcxe (·, ·) is given in equation (1). Binary Output
+branch of the discriminator is represented as Dbin , whereas
+Dcls refers to the classifier branch of the discriminator D.
+The Lcxe loss in equation (6) ensures that the generated faces
+are similar to the gallery-like images. The Lmrr loss ensures
+generation of crisp high-resolution gallery-like images from
+low-resolution probe images. Finally, the negative of Lkld loss
+ensures that the two generators are equally involved in capturing distinct components of the input image as discussed earlier
+in Section III-C.
+
+The discriminator of the D2SC-GAN model minimizes the
+overall loss function as:
+
+
+
+
+
+
+D
+D
+Ladv
+,
+I
+=
+L
+1
++
+L
+0
+(I
+)
+(I
+),
+(I
+),
+Gal
+G
+cxe
+bin
+Gal
+cxe
+bin
+G
+D
++ Lcxe (Dcls (IG ), y)
+
+(7)
+
+where, the first two terms in the loss function ensures that
+the discriminator correctly identifies an original image from a
+synthetically generated face, while the last term ensures correct classification of the generated images in a closed-set FR
+setting.
+V. I NDIAN C LASSROOM FACE DATASET (ICFD)
+With the advent of Deep Learning, and its requirement of
+large training datasets, we have seen a rise in large-scale face
+datasets. However, to the best of our knowledge, no dataset
+has been created to explore the challenges present in performing face recognition in unconstrained classroom/seminar room
+scenarios. We propose the “Indian Classroom Face Dataset”
+to address this issue.
+The proposed dataset consists of 84 subjects consisting of
+63 male and 21 females having 178 thousand images which
+are distributed into two categories: gallery and probe. For
+the gallery set, the face images of the subject were captured
+in controlled laboratory settings with adequate illumination
+conditions without any form of real-world perturbations. The
+subjects were seated at a distance of around 2 meters from
+a Nikon D7200 DSLR camera and were asked to move their
+head to capture images at various pitch and yaw angles as
+shown in Fig. 6. The average resolution of the gallery samples
+is 400 × 350 px (cropped using a standard off-the-shelf face
+detector [45]) with each subject having close to 900 samples
+at an average.
+The probe samples were captured in various classrooms and
+seminar rooms using the same DSLR camera as well as a
+Samsung S9 mobile-camera, where volunteers were instructed
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+228
+
+IEEE TRANSACTIONS ON BIOMETRICS, BEHAVIOR, AND IDENTITY SCIENCE, VOL. 2, NO. 3, JULY 2020
+
+Fig. 7. The probe samples on the top row and the corresponding results generated by our proposed method at the bottom row, for (a) ICFD, (b) FR_SURV [46],
+(c) TIPD [4], (d) Chokepoint [47] and (e) ScFace [48] datasets. Boxes in red indicate mismatches between the identity of the generated face and the
+corresponding probe sample. Figure best viewed in color.
+
+to stare at the dais/screen in front to create a realistic classroom scenario. Two types of videos were acquired using
+(i) a Samsung S9 mobile camera which was moved sideways across the dais in front of the audience, and (ii) with
+a DSLR camera in pan-mode at the center of the dais in front
+of the audience at a reasonable height. Two lighting conditions were used while acquiring videos for a subset of the
+test probes (42 subjects) in classroom conditions: (i) maximum illumination possible in the classroom with all lights
+turned on, and (ii) low illumination conditions where the all
+room lights were switched off and an empty white slide was
+projected onto the projector screen in front of the audience,
+which acted as the sole source of light in this case. More
+details of acquisition are given in [49]. The unconstrained
+nature of the classroom/seminar rooms leads to the presence
+of various degradations such as poor-illumination and contrast
+(Fig. 5 (a)), blur, caused due to low-resolution of the images
+captured as well as head movements made by the volunteers
+(Fig. 5 (b)), partial occlusions (Fig. 5(c)) and pose variations
+(Fig. 5(d)) in the captured images. The average resolution
+of the probe samples, post cropping using MTCNN [45], is
+110 × 80 px, with each subject having about 1250 samples
+at an average combining all images captured in different settings. More samples from the dataset along with the statistics
+of each partition has been provided in Appendix B of the supplementary document. A part of the dataset can be downloaded
+from [49].
+VI. E XPERIMENTAL S ETUP AND R ESULTS
+The experimentations are performed on a machine with
+Dual-Xeon processor and 256GB RAM, having an Nvidia
+Tesla V100 (32GB). The implementations are all coded in
+Keras 2.1.6 platform using Tensorflow (1.8.0)-backend. The
+model weights were all randomly initialized and required
+training for 30-72 hours on the GPU. The batch size was
+kept to 20 and the gallery and probe images were resized to
+140×140 and 35×35 pixels using bicubic interpolation across
+
+TABLE I
+DATASET PARTITION S TRATEGY FOR A LL F IVE R EAL -W ORLD FACE
+DATASETS U SED FOR T RAINING AND T ESTING , A LONG W ITH THE
+N UMBER OF C LASSES IN E ACH DATASET. VALUES D O N OT I NCLUDE
+T HAT U SED FOR DATA AUGMENTATION TO T RAIN D2SC-GAN
+
+all datasets. The following sections talks about the setup used
+for experimentation followed by the experimental results.
+A. Experimental Setup
+We perform experimentations on 5 real-world face datasets:
+Chokepoint [47], Scface [48], TIPD [50], FR_SURV [46] and
+the proposed ICFD. To show the superiority of the proposed
+method, we have performed experimentations in two setups.
+In the first case, we show the advantage of using the generator
+of our proposed model as a preprocessing step over conventional (non-DA) method. We compare the jump in performance
+due to the use of enhanced-probes generated by our proposed
+method instead of the generic probe samples, for training
+the non-DA methods. For experimentation, we use the entire
+gallery set and 15% of the probe (or enhanced probe) samples
+per subject for training these models, while using the rest of
+the probe (or enhanced probe) set for testing purposes.
+In the second case, we show the superiority of our
+method by both the qualitative (enhanced probe generation performance) and quantitative (Rank-1 recognition/identification rates) comparison of the performance of
+our model, with several state-of-the-art supervised Domain
+Adaptation (DA), super-resolution (SR) and degraded FR
+(DFR) techniques. As is prevalent with the supervised DA
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+BHATTACHARJEE AND DAS: D2SC-GAN: DUAL DEEP-SHALLOW CHANNELED GENERATIVE ADVERSARIAL NETWORK
+
+229
+
+Fig. 8. Comparison of faces generated by our method with (b) DCGAN [17], (c) BEGAN [18], (d) Isola et al. [20], (e) StarGAN [10], (f) LR-GAN [9],
+(g) SRLSP [32] and (h) SICNN [33] with our method (l) on the five real-world datasets. (a) denotes the input image, (i), (j) and (k) shows the ablation
+studies with generation results when employing (i) MR_PMSE + Adversarial + classification loss, (j) NCD + Adversarial + classification loss and (k)
+MR_PMSE + NCD + Adversarial + classification losses respectively, while (m) shows the corresponding ground-truth gallery face. Figure best viewed in
+color.
+
+experimental setup [9], [51], we use the complete gallery set
+along with ∼ 15% of the probe set (per subject) for the domain
+adaptation. We follow the same protocol for training the SR
+and DFR models as well. The data split used for our experimentation purposes is shown in Table I. It should, however, be
+noted that we need paired data for training the D2SC-GAN,
+where each pair (<gallery, probe>) belongs to the same identity. For training the D2SC-GAN, the probe samples are fed to
+the network, which minimizes the novel MRR loss to generate
+gallery-like images.
+B. Experimental Results
+We divide this section into two parts to showcase the
+qualitative and quantitative results. In the qualitative results
+sub-section, we visually compare the generated results for
+all five datasets along with their PSNR/SSIM metric values
+w.r.t. the ground truth images. Also, we show the advantage
+of using a dual-channel generator instead of a single-channel
+generator for the GAN, by demonstrating the results (face
+images) generated by each channel individually along with the
+dual-channel after training for the same number of epochs.
+Later, in the quantitative results, we show the advantage
+of using our method as a preprocessing step for conventional deep classifiers by comparing the rank-1 recognition
+rates with state-of-the-art supervised DA (SDA), SR and DFR
+techniques.
+1) Qualitative Results: The generated results for the above
+mentioned five datasets using the proposed method are shown
+in Fig. 7. The boxes in red shows discrepancy between the
+identities in the probes and the corresponding generated faces
+by the proposed technique.
+In order to compare the performance of our method with
+other state-of-the-art generative models, we compare the
+
+performance of our generated results with DCGAN [17],
+BEGAN [18], Isola et al. [20], StarGAN [10], LR-GAN [9],
+SRLSP [32] and SICNN [33] methods. Figure 8 shows
+the performance of our method with the aforementioned
+state-of-the-art methods on the five datasets. Additionally,
+we also show the generation performance of our model
+when employing different components of our proposed loss
+function. It can be seen that our method vastly outperforms all other methods in the generation task in terms of
+PSNR/SSIM values, reported below the generated images
+respectively. The SR method SRLSP [32] performs the
+worst which shows that this class of methods are not capable of handling domain discrepancy between the training
+and test data. The generation results of ablation studies
+when using combinations of: (i) MR_PMSE + Adversarial
+(Adv.) + Classification (Cls.) loss, (ii) NCD + Adv. + Cls.
+loss and (iii) MR_PMSE + NCD + Adv. + Cls. loss components are shown in the columns as Fig. 8(i), Fig. 8(j) and
+Fig. 8(k) respectively. It can be seen that in case (i) the skin
+color has not been reproduced correctly in patches of the face.
+As NCD is not a discriminative loss function, the faces generated for case (ii) are not very discriminative, but correctly
+capturing the skin-tone of the faces. The structure of the faces
+have been captured however, due to the presence of the classification loss. The combination of loss components in case
+(iii) provides better synthetic results as compared to (i) and
+(ii). However, we achieve best generation results when adding
+the KLD loss component to the losses in case (iii) as shown in
+Fig. 8(l). Thus, we can conclude that the MR_PMSE loss function has maximum contribution for reconstruction, followed by
+the NCD and KLD loss functions respectively.
+The proposed method provides best performance on the
+Chokepoint dataset [47] due to a significant similarity between
+the source and target data distributions. The performance of
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+230
+
+IEEE TRANSACTIONS ON BIOMETRICS, BEHAVIOR, AND IDENTITY SCIENCE, VOL. 2, NO. 3, JULY 2020
+
+Fig. 9. Improvement in rank-1 recognition rates of CNN-based methods for FR (without DA) using D2SC-GAN on FR_SURV (FSV) [46], SCface (SCF) [48],
+Chokepoint (CP) [47], TIP (TIP-D) [4] and the proposed ICF datasets respectively, for the methods mentioned below each set of bar-charts. For each bar, the
+blue color shows the performance of the deep model when trained with gallery and 15% of the probe samples, while the red color indicates the enhancement
+achieved in performance by using 15% of the enhanced-probe samples obtained from D2SC-GAN (instead of the raw probe samples) along with gallery to
+train the models. Figure best viewed in color.
+
+our method on the TIP dataset [4] is second best. The worst
+performance is exhibited on our proposed ICF dataset due to
+a gamut of challenges (pose variations, poor illumination, blur
+and occlusion) present in the dataset, a combination of which
+cannot be found in any of the other datasets available. Please
+note that all the other face datasets captured using surveillance
+cameras are near frontal. The particularly poor performances
+of all other methods on ICFD highlights the complexity level
+of the dataset.
+To quantify the performance of face generation by our
+method, we also show the average PNSR/SSIM values for
+the generation tasks and compare them with the other stateof-the-art methods in Table II. The proposed method performs
+the best while SRLSP [32] performs the worst. The jump in
+performance of our approach when compared to the LR-GAN
+model shows the effectiveness of using dual-channel models
+along with the proposed multi-resolution reconstruction loss
+for generation tasks. The average PSNR/SSIM values obtained
+when employing different components of loss functions are
+also reported in Table II, which follows the conclusion of our
+discussion about the importance of different components of
+the proposed loss function.
+Fig. 10 shows the rate of convergence of our proposed
+model with and without using the KLD-based loss function.
+The red line shows the convergence without KLD-based loss
+whereas the blue line shows the convergence of our model
+using the KLD-based loss function. We observe that the model
+achieves a higher PNSR value and converges faster when using
+the proposed KLD-based loss function. In Table II, we also
+report the average PSNR/SSIM when using only 5% and 10%
+of probe samples per subject during training of our model.
+We notice a moderate decrease in performance of our model
+across all datasets when using only 5% of the probe samples.
+There is, however, a substantial increase in performance of our
+model when trained using 10% probe samples per subject.
+Figure 11 shows the advantage of using the dual-channel for
+reconstruction on the FR_SURV [46] and the proposed ICF
+dataset. The images in column (a) is the input to the model,
+
+Fig. 10. Convergence of our proposed model in terms of Average PSNR
+values per epoch for ICF dataset. Red curve indicates model trained without
+KLD-based loss function whereas blue curve indicates model trained with
+KLD-based loss. End indicates the point of convergence of the models during
+training.
+
+Fig. 11. Face from FR_SURV dataset [46] (top row) and ICFD (bottom
+row) generated from (a) after 600 epochs, using (b) only GS , (c) only GD
+and (d) both GS and GD with (e) being the ground-truth. Figure best viewed
+in color.
+
+followed by the generated results from the (b) shallow (GS ),
+(c) deep (GD ) and (d) dual-channel (GS +GD ) models after 600
+epochs. It can be observed that the output from the shallow
+channel (GS ) preserves the low-frequency components while
+lacking in sharpness, whereas the output from the deep channel
+(GD ) preserves the sharpness (high-frequency components) of
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+BHATTACHARJEE AND DAS: D2SC-GAN: DUAL DEEP-SHALLOW CHANNELED GENERATIVE ADVERSARIAL NETWORK
+
+TABLE II
+T HE AVERAGE PSNR (PART A) AND SSIM (PART B) VALUES OF
+S YNTHESIZED FACES FOR THE 5 DATASETS FR_SURV [46] (FSV),
+TIP-D [4], S C FACE [48] (SCF), C HOKEPOINT [47] (CKP) AND THE
+P ROPOSED ICFD, OF O UR P ROPOSED M ETHOD C OMPARED TO
+DCGAN [17], BEGAN [18], I SOLA et al. [20], S TAR GAN [10],
+LR-GAN [9], SRLSP [32] AND SICNN [33]. AVERAGE PSNR/SSIM
+VALUES O BTAINED W HEN E MPLOYING D IFFERENT C OMPONENTS OF THE
+P ROPOSED L OSS F UNCTION AND FOR D IFFERENT P ERCENTAGES OF
+P ROBE S AMPLES (P ER S UBJECT ) U SED FOR T RAINING A RE A LSO
+R EPORTED . R ESULTS IN B OLD AND I TALICS I NDICATES B EST AND
+S ECOND -B EST P ERFORMANCES R ESPECTIVELY
+
+the image but fails to capture the accurate illumination and
+color variations present in the corresponding gallery image.
+The output from the dual channel generator (Fig. 11 (d)) is the
+closest to the ground-truth image (Fig. 11(e)) which shows the
+effectiveness of using the proposed method for reconstruction
+purposes.
+2) Quantitative Results: In this section, we showcase the
+capability of our method in two ways. Firstly, we report
+the Rank-1 recognition rates for few state-of-the-art nonDA deep-CNN methods when using probes/enhanced probes
+along with the gallery for training the models. Secondly, we
+compare our the Rank-1 recognition/identification rates with
+that of several state-of-the-art supervised Domain Adaptation,
+super-resolution (SR) as well as degraded FR (DFR) methods.
+The rank-1 recognition rates for non-DA methods are
+reported in the set of bar-charts in Fig. 9. For each bar, the
+blue color shows the performance of the deep model when
+
+231
+
+TABLE III
+C OMPARATIVE S TUDY OF P ERFORMANCE W ITH THE R ECENT
+S UPERVISED DA-BASED , SR AND DFR M ETHODS (W ITH AND W ITHOUT
+CNN) IN T ERMS OF R ANK -1 R ECOGNITION /I DENTIFICATION R ATES ( IN
+%). R ESULTS IN B OLD , I TALICS AND U NDERLINE I NDICATE THE B EST,
+S ECOND -B EST AND T HIRD -B EST P ERFORMANCES , R ESPECTIVELY
+
+trained with gallery and 15% of the probe samples, while the
+red color indicates the enhancement achieved by using the
+same set of 15% of the enhanced-probe samples generated by
+D2SC-GAN (instead of the probe samples) along with gallery
+to train the models. Inception-Resnet-V2 [52] performs the
+best while AlexNet [26] performs the worst with VGG-19 [11]
+performing the second best. The considerable increase in accuracy (denoted by the red color segment in each bar in Fig. 9)
+obtained by using the enhanced probes instead of the original
+probe samples, shows the advantage of using the generator of
+the proposed method as a preprocessing step for recognition
+tasks.
+The rank-1 recognition rates for deep and conventional
+state-of-the-art supervised DA, SR as well as DFR methods
+are reported in Table III. In case of SICNN [33], DCR [35]
+and Centerloss [53] + [34] methods, we have reported the
+Rank-1 identification rates. Our method (when using GS +GD ,
+at the bottom row) performs the best for all datasets, while
+SRLSP [32] performs the worst. The proposed method performs the second best when using only 10% of the probe
+samples. The second-best performance (excluding the variants
+of the proposed method) is shown by LR-GAN [9] while
+CCSA [31] comes a close third. The enhancement in the
+performance when using GS + GD , instead of either GS or
+GD alone, shows the effectiveness of the dual-channel architecture for reconstruction tasks. Our method outperforms all
+SR as well as DFR methods by a large margin as these methods are not designed to overcome large domain discrepancies.
+The performance of our model when employing different loss
+components again follows the conclusion from our discussion regarding the importance of different components of the
+proposed loss function in Section VI-B1. There is a moderate
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+232
+
+IEEE TRANSACTIONS ON BIOMETRICS, BEHAVIOR, AND IDENTITY SCIENCE, VOL. 2, NO. 3, JULY 2020
+
+Fig. 12. 2D visualization of features extracted from face samples of ICFD before and after DA, using tSNE [54]. (a) shows the scatter of samples from
+gallery and probes sets, while (b) shows the scatter of same gallery samples but with the enhanced-probe set obtained using DA of our proposed method on
+the same set of probes in (a). 20 samples from 10 subjects are used for illustration. Different colors represent different classes/subjects. Figure best viewed
+in color.
+
+decrease in performance of our proposed method when using
+5% of the probe samples per subject instead of 15%. The
+performance, however, increases substantially when using 10%
+of the probe samples per class instead of 15%. In general, all
+methods perform best for the Chokepoint dataset while performing worst for the ICF dataset, exhibiting the difficulty
+of performing face recognition in unconstrained classroom
+scenarios which have not been explored in the past. Further
+experimental results on the various subsets of probes of the
+proposed ICF dataset have been provided in Appendix C
+of the supplementary document. We have also reported the
+performance of our model in comparison to CCSA [31] and
+LR-GAN [9] on two other challenging datasets (LFW [55]
+and IJB-A [56]), both qualitatively and quantitatively, in
+Appendix D of the supplementary document.
+To visually illustrate the logic behind the effectiveness of
+domain adaptation of our proposed method, we separately
+visualize the scatterplots of 20 raw probe and enhanced probe
+samples, along with the corresponding gallery samples in 2D
+for ten subjects (chosen at random) from ICFD, on a t-SNE
+plot [54] using features extracted from a pre-trained VGGFace network for unbiased visualization. The scatter plot in
+Fig. 12(a) shows that although the gallery samples are properly clustered and well-separated in the feature space, the
+probe samples of different classes on the other hand, have
+a significant inter-class overlap (over each other) with barely
+much of class-wise separability, as the corresponding gallery
+classes. In fact the probe samples over all classes tend to relatively cluster more as a bunch together, (observe in Fig. 12(a),
+the dense scatter of  markers) which is unlike the gallery
+samples. The probe samples are also not close to their corresponding classwise gallery counterparts, which explains the
+poor-performance of non-DA deep methods when trained with
+
+gallery and original probes samples. The plot in Fig. 12(b)
+shows the effectiveness of our method in bridging the gap
+between the source and target domain by performing a targetto-source domain mapping. The enhanced-probe samples now
+form compact class-wise clusters close to the corresponding
+gallery counterparts with large inter-class separability, thus
+providing the basis of enhanced performance of the deep
+non-DA methods. When a few of enhanced-probe samples
+(generated by the proposed D2SC-GAN) are used instead
+of the original probe samples for training these classifiers
+(see Fig. 9), large inter-class separability in feature domain
+and formation of compact intra-class clusters of the samples,
+overlapping with their corresponding classwise gallery (training) clusters, automatically provides sufficient support for any
+classifier to work with enriched performance.
+VII. C ONCLUSION
+The proposed D2SC-GAN model uses a novel dualchanneled generator architecture to synthesize crisp, highresolution (HR) gallery-like face images from low-resolution
+probe samples by minimizing a novel generator loss with
+the multi-resolution reconstruction component and KullbackLeibler divergence-based component, which has numerous
+applications in the field of biometrics along with a discriminator to perform classification of the generated faces. The model
+can also be used as a preprocessing technique to transform
+LR probe samples to their corresponding HR gallery-like face
+images for FR as well as FV tasks. The model also performs
+the task of closed-set face recognition. The method effectively
+performs the task of DA by bridging the gap between the
+crisp gallery faces and probes with real-world degradation.
+We also propose the Indian Classroom Face Dataset (ICFD)
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+BHATTACHARJEE AND DAS: D2SC-GAN: DUAL DEEP-SHALLOW CHANNELED GENERATIVE ADVERSARIAL NETWORK
+
+which to the best of our knowledge is the first of its kind and
+will help researchers to explore the challenges present in performing FR in classroom settings. Rigorous experimentations
+of the proposed model on five real-world face datasets show
+the superiority of our proposed method. We plan to overcome
+the limitation of open-set face recognition by incorporating
+unsupervised domain adaptation instead of supervised domain
+adaptation into our framework, as a future scope of our work.
+R EFERENCES
+[1] A. S. Georghiades, P. N. Belhumeur, and D. J. Kriegman, “From few
+to many: Illumination cone models for face recognition under variable
+lighting and pose,” IEEE Trans. Pattern Anal. Mach. Intell., vol. 23,
+no. 6, pp. 643–660, Jun. 2001.
+[2] T. Ahonen, A. Hadid, and M. Pietikainen, “Face description with local
+binary patterns: Application to face recognition,” IEEE Trans. Pattern
+Anal. Mach. Intell., vol. 28, no. 12, pp. 2037–2041, Dec. 2006.
+[3] W.-Y. Zhao, R. Chellappa, P. J. Phillips, and A. Rosenfeld, “Face recognition: A literature survey,” ACM Comput. Surveys, vol. 35, no. 4,
+pp. 399–458, 2003.
+[4] A. Punnappurath, A. N. Rajagopalan, S. Taheri, R. Chellappa, and
+G. Seetharaman, “Face recognition across non-uniform motion blur,
+illumination, and pose,” IEEE Trans. Image Process., vol. 24, no. 7,
+pp. 2067–2082, Jul. 2015.
+[5] I. Masi, Y. Wu, T. Hassner, and P. Natarajan, “Deep face recognition:
+A survey,” in Proc. IEEE SIBGRAPI Conf. Graph. Patterns Images
+(SIBGRAPI), 2018, pp. 471–478.
+[6] A. Bhattacharjee, S. Banerjee, and S. Das, “PosIX-GAN: Generating
+multiple poses using GAN for pose-invariant face recognition,” in Proc.
+Eur. Conf. Comput. Vis. Workshops (ECCVW), 2018, pp. 427–443.
+[7] S. Banerjee and S. Das, “Domain adaptation with soft-margin multiple
+feature-kernel learning beats deep learning for surveillance face recognition,” 2016. [Online]. Available: arXiv:1610.01374.
+[8] S. Banerjee and S. Das, “Mutual variation of information on
+transfer-CNN for face recognition with degraded probe samples,”
+Neurocomputing, vol. 310, pp. 299–315, 2018.
+[9] S. Banerjee and S. Das, “LR-GAN for degraded face recognition,”
+Pattern Recognit. Lett., vol. 116, pp. 246–253, Dec. 2018.
+[10] Y. Choi, M.-J. Choi, M. Kim, J.-W. Ha, S. Kim, and J. Choo, “StarGAN:
+Unified generative adversarial networks for multi-domain image-toimage translation,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit.
+(CVPR), 2018, pp. 8789–8797.
+[11] K. Simonyan and A. Zisserman, “Very deep convolutional networks
+for large-scale image recognition,” 2014. [Online]. Available:
+arXiv:1409.1556.
+[12] O. M. Parkhi, A. Vedaldi, and A. Zisserman, “Deep face recognition,”
+in Proc. Brit. Mach. Vis. Conf. (BMVC), 2015, p. 6.
+[13] F. Schroff, D. Kalenichenko, and J. Philbin, “FaceNet: A unified embedding for face recognition and clustering,” in Proc. IEEE Conf. Comput.
+Vis. Pattern Recognit. (CVPR), 2015, pp. 815–823.
+[14] Y. Sun, D. Liang, X. Wang, and X. Tang, “DeepID3: Face recognition with very deep neural networks,” 2015. [Online]. Available:
+arXiv:1502.00873.
+[15] Y. Taigman, M. Yang, M. Ranzato, and L. Wolf, “DeepFace: Closing
+the gap to human-level performance in face verification,” in Proc. IEEE
+Conf. Comput. Vis. Pattern Recognit. (CVPR), 2014, pp. 1701–1708.
+[16] P. Li, L. Prieto, D. Mery, and P. Flynn, “Face recognition in low quality
+images: A survey,” 2018. [Online]. Available: arXiv:1805.11519.
+[17] A. Radford, L. Metz, and S. Chintala, “Unsupervised representation
+learning with deep convolutional generative adversarial networks,” 2015.
+[Online]. Available: arXiv:1511.06434.
+[18] D. Berthelot, T. Schumm, and L. Metz, “Began: Boundary equilibrium generative adversarial networks,” 2017. [Online]. Available:
+arXiv:1703.10717.
+[19] M. Arjovsky, S. Chintala, and L. Bottou, “Wasserstein GAN,” 2017.
+[Online]. Available: arXiv:1701.07875.
+[20] P. Isola, J.-Y. Zhu, T. Zhou, and A. A. Efros, “Image-to-image translation
+with conditional adversarial networks,” in Proc. IEEE Conf. Comput. Vis.
+Pattern Recognit. (CVPR), 2017, pp. 1125–1134.
+[21] J. Zhao et al., “Dual-agent GANs for photorealistic and identity
+preserving profile face synthesis,” in Proc. Adv. Neural Inf. Process.
+Syst. (NIPS), 2017, pp. 66–76.
+
+233
+
+[22] J. Zhao, L. Xiong, J. Li, J. Xing, S. Yan, and J. Feng, “3D-aided dualagent GANs for unconstrained face recognition,” IEEE Trans. Pattern
+Anal. Mach. Intell., vol. 41, no. 10, pp. 2380–2394, Oct. 2019.
+[23] Y. Shen, P. Luo, J. Yan, X. Wang, and X. Tang, “FaceID-GAN: Learning
+a symmetry three-player GAN for identity-preserving face synthesis,”
+in Proc. IEEE Conf. Comput. Vis. Pattern Recognit. (CVPR), 2018,
+pp. 821–830.
+[24] Y. Sun, X. Wang, and X. Tang, “Deep learning face representation from
+predicting 10,000 classes,” in Proc. IEEE Conf. Comput. Vis. Pattern
+Recognit. (CVPR), 2014, pp. 1891–1898.
+[25] M. Chen, K. Q. Weinberger, F. Sha, and Y. Bengio, “Marginalized
+denoising auto-encoders for nonlinear representations,” in Proc. Int.
+Conf. Mach. Learn. (ICML), 2014, pp. 1476–1484.
+[26] A. Krizhevsky, I. Sutskever, and G. E. Hinton, “ImageNet classification with deep convolutional neural networks,” in Proc. Adv. Neural Inf.
+Process. Syst. (NIPS), 2012, pp. 1097–1105.
+[27] J. Hoffman et al., “LSDA: Large scale detection through adaptation,” in
+Proc. Adv. Neural Inf. Process. Syst. (NIPS), 2014, pp. 3536–3544.
+[28] S. Banerjee and S. Das, “Soft-margin learning for multiple feature-kernel
+combinations with domain adaptation, for recognition in surveillance
+face dataset,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit.
+Workshops (CVPRW) Biometrics, 2016, pp. 169–174.
+[29] M. Long, Y. Cao, J. Wang, and M. I. Jordan, “Learning transferable
+features with deep adaptation networks,” 2015. [Online]. Available:
+arXiv:1502.02791.
+[30] J.-C. Chen, J. Zheng, V. M. Patel, and R. Chellappa, “Fisher vector
+encoded deep convolutional features for unconstrained face verification,”
+in Proc. IEEE Int. Conf. Image Process. (ICIP), 2016, pp. 2981–2985.
+[31] S. Motiian, M. Piccirilli, D. A. Adjeroh, and G. Doretto, “Unified deep
+supervised domain adaptation and generalization,” in Proc. IEEE Int.
+Conf. Comput. Vis. (ICCV), 2017, pp. 5715–5725.
+[32] J. Jiang, C. Chen, J. Ma, Z. Wang, Z. Wang, and R. Hu, “SRLSP:
+A face image super-resolution algorithm using smooth regression with
+local structure prior,” IEEE Trans. Multimedia, vol. 19, no. 1, pp. 27–40,
+Aug. 2016.
+[33] K. Zhang et al., “Super-identity convolutional neural network for
+face hallucination,” in Proc. Eur. Conf. Comput. Vis. (ECCV), 2018,
+pp. 183–198.
+[34] P. Li, L. Prieto, D. Mery, and P. J. Flynn, “On low-resolution face recognition in the wild: Comparisons and new techniques,” IEEE Trans. Inf.
+Forensics Security, vol. 14, no. 8, pp. 2000–2012, Aug. 2019.
+[35] Z. Lu, X. Jiang, and A. Kot, “Deep coupled ResNet for lowresolution face recognition,” IEEE Signal Process. Lett., vol. 25, no. 4,
+pp. 526–530, Apr. 2018.
+[36] A. Odena, C. Olah, and J. Shlens, “Conditional image synthesis with
+auxiliary classifier GANs,” in Proc. Int. Conf. Mach. Learn. (ICML),
+2017, pp. 2642–2651.
+[37] Y. Wang, L. Wang, H. Wang, and P. Li, “End-to-end image superresolution via deep and shallow convolutional networks,” 2016. [Online].
+Available: arXiv:1607.07680.
+[38] M. D. Zeiler and R. Fergus, “Visualizing and understanding convolutional networks,” in Proc. Eur. Conf. Comput. Vis.. 2014, pp. 818–833.
+[39] K. He, X. Zhang, S. Ren, and J. Sun, “Deep residual learning for
+image recognition,” in Proc. IEEE Conf. Comput. Vis. Pattern Recognit.
+(CVPR), 2016, pp. 770–778.
+[40] G. Huang, Z. Liu, L. Van Der Maaten, and K. Q. Weinberger, “Densely
+connected convolutional networks,” in Proc. IEEE Conf. Comput. Vis.
+Pattern Recognit. (CVPR), 2017, pp. 4700–4708.
+[41] J. Shore and R. Johnson, “Axiomatic derivation of the principle of maximum entropy and the principle of minimum cross-entropy,” IEEE Trans.
+Inf. Theory, vol. IT-26, no. 1, pp. 26–37, Jan. 1980.
+[42] S. Kullback and R. A. Leibler, “On information and sufficiency,” Ann.
+Math. Stat., vol. 22, no. 1, pp. 79–86, 1951.
+[43] P. Chardy, M. Glemarec, and A. Laurec, “Application of inertia methods to benthic marine ecology: Practical implications of the basic
+options,” Estuarine Coastal Marine Sci., vol. 4, no. 2, pp. 179–205,
+1976.
+[44] O. Pele and M. Werman, “The quadratic-Chi histogram distance family,”
+in Proc. Eur. Conf. Comput. Vis. (ECCV), 2010, pp. 749–762.
+[45] K. Zhang, Z. Zhang, Z. Li, and Y. Qiao, “Joint face detection and alignment using multitask cascaded convolutional networks,” IEEE Signal
+Process. Lett., vol. 23, no. 10, pp. 1499–1503, Apr. 2016.
+[46] S. Rudrani and S. Das, “Face recognition on low quality surveillance
+images, by compensating degradation,” in Proc. Int. Conf. Image Anal.
+Recognit. (ICIAR), 2011, pp. 212–221.
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+234
+
+IEEE TRANSACTIONS ON BIOMETRICS, BEHAVIOR, AND IDENTITY SCIENCE, VOL. 2, NO. 3, JULY 2020
+
+[47] Y. Wong, S. Chen, S. Mau, C. Sanderson, and B. C. Lovell, “Patch-based
+probabilistic image quality assessment for face selection and improved
+video-based face recognition,” in Proc. IEEE Conf. Comput. Vis. Pattern
+Recognit. Workshops (CVPRW) Biometrics, 2011, pp. 74–81.
+[48] M. Grgic, K. Delac, and S. Grgic, “Scface–surveillance cameras face
+database,” Multimedia Tools Appl., vol. 51, no. 3, pp. 863–879, 2011.
+[49] A. Bhattacharjee and S. Das. (2019). ICFD: Indian Classroom Face
+Dataset. [Online]. Available: https://sites.google.com/view/icfd
+[50] P. Vageeswaran, K. Mitra, and R. Chellappa, “Blur and illumination
+robust face recognition via set-theoretic characterization,” IEEE Trans.
+Image Process., vol. 22, no. 4, pp. 1362–1372, Apr. 2013.
+[51] E. Tzeng, H. Hoffman, T. Darell, and K. Saenko, “Simultaneous deep
+transfer across domains and tasks,” in Proc. IEEE Int. Conf. Comput.
+Vis. (ICCV), 2015, pp. 4068–4076.
+[52] C. Szegedy, S. Ioffe, V. Vanhoucke, and A. A. Alemi, “Inception-v4,
+inception-ResNet and the impact of residual connections on learning,”
+in Proc. 31st AAAI Conf. Artif. Intell., 2017, pp. 4278–4284.
+[53] Y. Wen, K. Zhang, Z. Li, and Y. Qiao, “A discriminative feature learning
+approach for deep face recognition,” in Proc. Eur. Conf. Comput. Vis.
+(ECCV), 2016, pp. 499–515.
+[54] L. V. D. Maaten and G. Hinton, “Visualizing data using t-SNE,” J. Mach.
+Learn. Res., vol. 9, pp. 2579–2605, Nov. 2008.
+[55] G. B. Huang, M. Mattar, T. Berg, and E. Learned-Miller, “Labeled faces
+in the wild: A database for studying face recognition in unconstrained
+environments,” Dept. Comput. Sci., Univ. Massachusetts, Amherst, MA,
+USA, Rep. 07-49, 2008.
+[56] B. F. Klare et al., “Pushing the frontiers of unconstrained face detection and recognition: IARPA janus benchmark A,” in Proc. IEEE Conf.
+Comput. Vis. Pattern Recognit. (CVPR), 2015, pp. 1931–1939.
+
+Sukhendu Das (Senior Member, IEEE) received the
+B.Tech. degree from the Department of Electrical
+Engineering, IIT Kharagpur in 1985, the M.Tech.
+degree in computer technology from IIT Delhi in
+1987, and the Ph.D. degree from IIT Kharagpur
+in 1993. He is currently employed as a Professor
+with the Department of Computer Science and
+Engineering, IIT Madras, Chennai, India, where he
+has been a faculty since 1989. He has worked
+as a Visiting Scientist with the University of
+Applied Sciences, Pforzheim, Germany, for postdoctoral research work, from December 2001 to May 2003, and a Visiting
+Fellow/Scientist with the University of UWA, Perth, WA, Australia, from June
+2006 to August 2006, and from July 2008 to September 2008. He has guided
+seven (currently, guiding three) Ph.D. students, 30 (currently, guiding nine)
+M.S., 42 M.Tech. (+ Dual) (currently, guiding ten), and nine B.Tech. students. He had completed several international and national sponsored projects
+and consultancies, both as the Principle and Co-Investigators. He has published more than 150 technical papers in international and national journals
+and conferences. His current areas of research interests are: visual perception,
+computer vision: digital image processing and pattern recognition, computer
+graphics, artificial neural networks, computational science and engineering,
+soft computing, deep learning, and computational brain modeling. He has
+received five best papers and a best design contest award. Significant and
+Novel Technical Contributions are: MSGAN for Video Prediction; MST-CSS
+Representation for CBVR Tasks; SUBBAND Face, Deep-DA or TransferCNN, Eigen-Domain Transformation and Eigen-Scale Space Representations
+for Face-Based Biometry Applications; Creation of an Outdoor Surveillance
+Face Database (Support from MCIT, GOI) for Biometry; and Manifold-Based
+Alignment for Optimization Using Domain Adaptation, for Applications in
+Face, Object and Video Categorization Tasks. He has the reviewed several
+papers in international journals (IEEE, IET, Elsevier, and Springer) and the
+chaired several sessions in conferences.
+
+Avishek Bhattacharjee received the B.Tech. degree
+in computer science and engineering from Netaji
+Subhash Engineering College, Kolkata, India, in
+2016. He has been an MS by Research Scholar
+with the Department of Computer Science and
+Engineering, Indian Institute of Technology Madras,
+India, since 2016. His research interests include
+computer vision, face recognition, deep learning,
+neural networks, machine learning, and transfer
+learning.
+
+Authorized licensed use limited to: INDIAN INSTITUTE OF TECHNOLOGY MADRAS. Downloaded on September 20,2026 at 08:36:31 UTC from IEEE Xplore. Restrictions apply.
+
+

@@ -1,0 +1,346 @@
+# Comprehensive Literature Review and Synthesized Context (`context.md`)
+## Task: Novel Deep Learning Framework for Face Recognition in the Wild
+**Course / Benchmark**: Computer Vision CS6350 TPA-13  
+**Target Goal**: Detection, Alignment, Attribute Parsing, Pose Transformation, Occlusion-Robust Feature Representation, and Unknown Identity Classification in Unconstrained Real-World Environments.
+
+---
+
+# 1. Executive Summary & Problem Formulation
+
+Real-world ("in the wild") face recognition and detection present severe multi-modal challenges:
+1. **Unconstrained Pose Variations**: Extreme yaw (up to $\pm 90^\circ$), pitch, and roll angles cause self-occlusion of key facial landmarks.
+2. **Severe Partial Occlusions**: Faces in crowds are frequently obstructed by masks, sunglasses, hats, hands, or adjacent people (e.g., WebFace-OCC benchmark).
+3. **Complex & Non-Ideal Illumination**: Extreme shadows, backlighting, low light, and over-exposure alter spatial pixel intensities dramatically.
+4. **Resolution & Background Clutter**: Low-resolution cropped faces embedded in crowded scenes with heavy background noise.
+5. **Open-Set Identification ("Unknown" Class)**: Real-world deployment requires distinguishing known enrolled individuals from un-enrolled / unseen identities with a calibrated confidence score.
+
+### Problem Requirements (TPA-13)
+* **Input**: Arbitrary wild image containing single or multiple faces under non-ideal conditions.
+* **Output**: Bounding box coordinates $[x_{min}, y_{min}, x_{max}, y_{max}]$, predicted identity label ($Name$ if enrolled in database, else `'unknown'`), and a calibrated confidence score $C \in [0, 1]$.
+* **Target Reference Datasets**: WebFace-OCC (804k faces, 10.5k subjects), LFW (13.2k faces), CelebA (202k faces, 40 attributes).
+
+---
+
+# 2. Line-by-Line Technical Analysis of Reference Literature
+
+---
+
+## 2.1 Deep Learning Face Attributes in the Wild (LNet + ANet)
+* **Authors**: Ziwei Liu, Ping Luo, Xiaogang Wang, Xiaoou Tang (ICCV 2015 / arXiv:1411.7766)
+* **Core Innovation**: Cascaded deep networks separating landmark localization (LNet) from semantic attribute prediction (ANet) to overcome unconstrained clutter.
+
+```mermaid
+graph LR
+    Input[Wild Image] --> LNet[LNet: Localization Net]
+    LNet --> BBox[Face Bounding Box & Landmarks]
+    BBox --> Crop[Face Region Crop]
+    Crop --> ANet[ANet: Attribute Net]
+    ANet --> DualFeat[Dual Feature Representation]
+    DualFeat --> Global[Global Identity Embedding]
+    DualFeat --> Local[40 Semantic Local Attributes]
+```
+
+### Key Technical Mechanisms
+1. **LNet (Localization Network)**:
+   - Built on cascaded convolutional layers ($Conv1 \to Conv4$).
+   - Learns background-versus-face probability maps without requiring explicit face bounding box pre-training.
+   - Detects coarse facial regions even under low quality and background clutter.
+2. **ANet (Attribute Network)**:
+   - Extracts two parallel representation vectors:
+     1. **Holistic / Global Face Vector**: Captures overall spatial structure.
+     2. **Local Component Vectors**: Extracted from localized facial patches (eyes, nose, mouth, hair).
+   - Trained multi-task across 40 binary semantic facial attributes (e.g., `Wearing_Hat`, `Wearing_Sunglasses`, `Eyeglasses`, `Mustache`, `Heavy_Makeup`, `Gender`, `Age`).
+3. **Relevance to Wild Face Recognition**:
+   - Attribute awareness acts as an explicit mask predictor: if `Wearing_Sunglasses` is active, the network suppresses gradients from the eye region and relies on lower facial landmarks.
+   - High-level semantic attributes provide domain-invariant identity cues when raw pixel intensities are corrupted by illumination or shadow.
+
+---
+
+## 2.2 CurricularFace: Adaptive Curriculum Learning Loss for Deep Face Recognition
+* **Authors**: Yuge Huang, Yuhan Wang, Ying Tai, Xiaoming Liu, Pengcheng Shen, Shaoxin Li, Jilin Li, Feiyue Huang (CVPR 2020 / arXiv:2004.00288)
+* **Core Innovation**: Dynamically modulates hard sample mining during training based on curriculum learning—prioritizing easy samples in early epochs and hard samples in later epochs.
+
+### Mathematical Formulation
+Standard margin-based softmax losses (CosFace, ArcFace) modulate the ground-truth angle $\theta_{y_i}$. CurricularFace introduces an adaptive modulation coefficient $I(t, \cos \theta_j)$ for negative cosine similarities $\cos \theta_j$ ($j \neq y_i$):
+
+$$\mathcal{L}_{Curricular} = -\log \frac{e^{s \cdot \cos(\theta_{y_i} + m)}}{e^{s \cdot \cos(\theta_{y_i} + m)} + \sum_{j \neq y_i}^{N} e^{s \cdot N(t, \cos \theta_j)}}$$
+
+Where the negative modulation function $N(t, \cos \theta_j)$ is defined as:
+
+$$N(t, \cos \theta_j) = \begin{cases} 
+\cos \theta_j & \text{if } \cos(\theta_{y_i} + m) - \cos \theta_j \ge 0 \quad (\text{Easy Sample}) \\ 
+\cos \theta_j (t + \cos \theta_j) & \text{if } \cos(\theta_{y_i} + m) - \cos \theta_j < 0 \quad (\text{Hard Sample}) 
+\end{cases}$$
+
+### Adaptive Curriculum Parameter $t$
+Instead of fixing $t$ as a static hyperparameter (which causes early training divergence in MV-Arc-Softmax), CurricularFace dynamically tracks the model's convergence using an Exponential Moving Average (EMA) of positive cosine similarities:
+
+$$t^{(k)} = \alpha t^{(k-1)} + (1 - \alpha) \bar{\cos \theta}_{y_i}^{(k)}$$
+
+where $\bar{\cos \theta}_{y_i}^{(k)}$ is the mean cosine similarity of ground-truth pairs in mini-batch $k$, and $\alpha$ is the momentum parameter (typically $\alpha = 0.99$).
+
+```mermaid
+graph TD
+    A[Mini-Batch Embeddings] --> B{Calculate cos theta_y_i}
+    B --> C[Compute Batch Mean cos theta]
+    C --> D[Update EMA Parameter t]
+    B --> E{Is cos theta_yi + m >= cos theta_j?}
+    E -- Yes: Easy Sample --> F[N = cos theta_j]
+    E -- No: Hard Sample --> G[N = cos theta_j * t + cos theta_j]
+    F --> H[Curricular Loss Backprop]
+    G --> H
+```
+
+### Theoretical Advantage
+- **Early Stage ($t \approx 0$)**: $N(t, \cos \theta_j) \approx \cos^2 \theta_j < \cos \theta_j$. Hard samples are suppressed, preventing bad annotations or extreme occlusions from disrupting initial convergence.
+- **Late Stage ($t \to 1$)**: $N(t, \cos \theta_j) \approx \cos \theta_j(1 + \cos \theta_j) > \cos \theta_j$. Misclassified samples receive heavily amplified gradients, forcing the backbone to learn sharp decision margins for occluded and pose-variant faces.
+
+---
+
+## 2.3 BroadFace: Looking at Tens of Thousands of People at Once for Face Recognition
+* **Authors**: Yonghyun Kim, Wonpyo Park, Jongju Shin (ECCV 2020 / arXiv:2008.06674)
+* **Core Innovation**: Overcomes GPU mini-batch memory limits by maintaining a large FIFO queue of past feature embeddings with active gradient compensation.
+
+```mermaid
+graph LR
+    SubGraph1[Current Mini-Batch B] --> Backbone[ResNet Backbone]
+    Backbone --> CurEmbeds[Current Batch Embeddings]
+    CurEmbeds --> Loss[Curricular / Margin Loss]
+    Queue[BroadFace Memory Queue Q: N_q = 65536] --> Compensator[Weight Update Compensator]
+    Compensator --> Loss
+    CurEmbeds --> Queue
+```
+
+### Key Technical Mechanisms
+1. **Memory Queue $Q$**:
+   - Stores $N_q$ past feature embeddings ($N_q = 65,536$) along with their ground-truth identity labels.
+   - Allows computing negative cross-entropy logits over tens of thousands of negative classes in every single step.
+2. **Gradient Compensation Step**:
+   - As backpropagation updates network weights $W$, old queue embeddings $f_{old}$ become stale relative to current $W$.
+   - BroadFace applies a lightweight linear transformation or momentum drift correction to $f_{old}$ using the accumulated weight update $\Delta W$:
+     $$f_{compensated} = f_{old} + \eta \Delta W \cdot f_{old}$$
+3. **Relevance to Wild Face Recognition**:
+   - Prevents false-positive matches in crowded wild images by contrasting each face candidate against tens of thousands of distractor identities simultaneously.
+
+---
+
+## 2.4 Improving Face Recognition by Clustering Unlabeled Faces in the Wild
+* **Authors**: Aruni RoyChowdhury, Prithviraj Dhar, Swapna Banerjee, Rama Chellappa (ECCV 2020 / arXiv:2007.06995)
+* **Core Innovation**: Utilizes graph convolutional networks (GCN) to cluster unlabeled wild face collections, pseudo-labeling them to adapt models to domain shifts without human annotation.
+
+### Pipeline & GCN Sub-Graph Clustering
+1. **k-NN Graph Construction**:
+   - Computes cosine similarity between unlabeled wild face embeddings $F_{unlabeled}$ to build a nearest-neighbor graph $\mathcal{G} = (\mathcal{V}, \mathcal{E})$.
+2. **GCN Link Predictor**:
+   - A 2-layer Graph Convolutional Network operates on local sub-graphs to predict edge probabilities $P(e_{ij} = 1)$, representing whether node $i$ and node $j$ belong to the same identity despite pose or occlusion variations.
+   - Node feature aggregation rule:
+     $$H^{(l+1)} = \sigma \left( \tilde{D}^{-\frac{1}{2}} \tilde{A} \tilde{D}^{-\frac{1}{2}} H^{(l)} W^{(l)} \right)$$
+3. **Iterative Semi-Supervised Fine-Tuning**:
+   - Connected components with confidence $> \tau_{cluster}$ are assigned pseudo-class labels.
+   - The primary backbone is re-trained using a joint loss:
+     $$\mathcal{L}_{total} = \mathcal{L}_{labeled} + \lambda_{semi} \mathcal{L}_{pseudo}$$
+
+---
+
+## 2.5 Discriminative Dictionary and Representation Learning (DDRC)
+* **Authors**: IEEE Transactions on Biometrics, Behavior, and Identity Science / ACCESS2901376
+* **Core Innovation**: Couples deep feature embeddings with learned class-specific discriminative dictionary matrices and sparse representation reconstruction for occlusion/noise-robust face verification and unknown rejection.
+
+### Mathematical Formulation
+Let $f = \Phi(I; \Theta) \in \mathbb{R}^d$ be the deep feature vector extracted from face image $I$. DDRC models $f$ as a sparse linear combination of dictionary columns (atoms) $D = [D_1, D_2, \dots, D_K] \in \mathbb{R}^{d \times M}$, plus an explicit sparse occlusion noise vector $e \in \mathbb{R}^d$:
+
+$$f = D x + e = \sum_{k=1}^{K} D_k x_k + e$$
+
+The joint optimization objective for dictionary $D$, sparse code $x$, and deep network weights $\Theta$ is:
+
+$$\min_{\Theta, D, X, E} \sum_{i=1}^{N} \left( \| \Phi(I_i; \Theta) - D x_i - e_i \|_2^2 + \lambda_1 \|x_i\|_1 + \lambda_2 \|e_i\|_1 \right) + \gamma \mathcal{L}_{disc}(D) + \mu \mathcal{L}_{cls}(\Theta)$$
+
+Where:
+- $\|x_i\|_1$: $L_1$-norm promoting sparsity in representation coefficients across classes.
+- $\|e_i\|_1$: $L_1$-norm modeling sparse localized occlusion corruptions (e.g., sunglass/mask pixels).
+- $\mathcal{L}_{disc}(D)$: Enforces mutual incoherence between class sub-dictionaries $D_i^T D_j \approx 0$ ($i \neq j$).
+
+### Unknown Rejection & Classification Criterion
+For a candidate face $I_{test}$ with deep feature $f_{test}$:
+1. Solve for sparse code $\hat{x}$ and noise $\hat{e}$ via Iterative Shrinkage-Thresholding Algorithm (ISTA) or ADMM.
+2. Calculate the class-specific reconstruction residual for identity $k$:
+   $$r_k(I_{test}) = \| f_{test} - \hat{e} - D_k \hat{x}_k \|_2^2$$
+3. **Identity Assignment Rule**:
+   $$\text{Identity} = \begin{cases} 
+   \arg\min_k r_k(I_{test}) & \text{if } \min_k r_k(I_{test}) \le \tau_{residual} \text{ and } \frac{r_{2nd} - r_{min}}{r_{2nd}} \ge \delta_{margin} \\ 
+   \text{'unknown'} & \text{otherwise} 
+   \end{cases}$$
+
+---
+
+## 2.6 Pose-Invariant Model (PIM) & D2SC-GAN
+* **Authors**: Jian Zhao et al. (CVPR 2018 / arXiv:1805.00801) & Avishek Bhattacharjee, Sukhendu Das (IEEE TBIOM 2020)
+* **Core Innovation**: Dual-path generative network for face frontalization and pose-invariant feature embedding, complemented by dual deep-shallow channeled GAN (D2SC-GAN) for low-resolution face restoration.
+
+```mermaid
+graph TD
+    ProfileInput[Profile / Occluded Face Image I_p] --> Generator[Frontalization Generator G]
+    Generator --> FrontalSynthetic[Synthesized Frontal Image I_f]
+    ProfileInput --> ENet[Feature Embedding Net E]
+    FrontalSynthetic --> ENet
+    ENet --> FeatP[Embedding f_p]
+    ENet --> FeatF[Embedding f_f]
+    FeatP --> IDLoss[Identity Preserving Loss L_id]
+    FeatF --> IDLoss
+    FrontalSynthetic --> Discriminator[Discriminator D]
+    Discriminator --> AdvLoss[Adversarial Loss L_adv]
+```
+
+### Loss Formulation for Pose Invariance
+$$\mathcal{L}_{PIM} = \mathcal{L}_{adv}(G, D) + \lambda_{pixel} \mathcal{L}_{pixel}(G) + \lambda_{sym} \mathcal{L}_{sym}(G) + \lambda_{id} \mathcal{L}_{id}(E, G)$$
+
+1. **Pixel Reconstruction Loss ($\mathcal{L}_{pixel}$)**:
+   $$\mathcal{L}_{pixel} = \| G(I_p) - I_{ground\_truth\_frontal} \|_1$$
+2. **Symmetry Loss ($\mathcal{L}_{sym}$)**:
+   Forces bilateral symmetry on generated canonical frontal views:
+   $$\mathcal{L}_{sym} = \| G(I_p) - \text{Flip}(G(I_p)) \|_1$$
+3. **Identity Preserving Loss ($\mathcal{L}_{id}$)**:
+   $$\mathcal{L}_{id} = 1 - \frac{E(I_p)^T E(G(I_p))}{\|E(I_p)\|_2 \|E(G(I_p))\|_2}$$
+
+---
+
+# 3. Comparative Synthesis & Synergy Matrix
+
+| Technique | Primary Strengths | Weaknesses / Bottlenecks | Synthesis Function in Proposed Solution |
+| :--- | :--- | :--- | :--- |
+| **LNet + ANet** | Robust landmark localization & 40 local attribute parsing | Older CNN backbone; requires multi-stage pipeline | Attribute parsing mask guides spatial attention away from occluded zones |
+| **CurricularFace** | Adaptive easy-to-hard sample scheduling; eliminates manual hyperparameter tuning | Standard backbone can still suffer under extreme $\pm 90^\circ$ yaw | Main training loss function for backbone embedding network |
+| **BroadFace** | $65,536$ negative queue embeddings provide global identity contrast | Increases RAM/VRAM footprint for queue maintenance | Multi-class queue manager preventing false positives in crowds |
+| **Unlabeled Clustering** | Exploits unannotated wild imagery; mitigates domain shift | Noisy graph edges can introduce pseudo-label error | Semi-supervised domain adaptation for wild environment tuning |
+| **DDRC** | Sparse error term $e$ isolates occlusions; residual checks detect unknown identity | Optimization loop (ISTA/ADMM) adds inference latency | Closed-set identity classification & robust 'unknown' flag gate |
+| **PIM / D2SC-GAN** | Synthesizes canonical frontal view; removes severe pose distortion | Generative artifacts if pose/resolution is extremely degraded | Frontalization & super-resolution pre-processing module for crop patches |
+
+---
+
+# 4. Feasibility Analysis & Architectural Trade-offs
+
+1. **Inference Latency vs. Accuracy**:
+   - *Challenge*: Running GAN frontalization (PIM) + Deep Backbone + DDRC ISTA optimization per face bounding box can slow inference.
+   - *Solution*: A two-tier gated pipeline:
+     - Tier 1: Fast Backbone (ResNet-50 / MobileFaceNet) + Cosine Distance. If confidence $> 0.85$ and pose yaw $< 25^\circ$, accept prediction immediately.
+     - Tier 2: If pose is extreme ($> 30^\circ$) or occlusion detected via ANet attribute flags, pass cropped patch to PIM Frontalizer & DDRC Sparse Solver.
+
+2. **Occlusion-Noise Separation**:
+   - Combining ANet attribute masks (e.g. `Wearing_Mask=True`) directly initializes the non-zero indices in DDRC's sparse error vector $e$, accelerating ISTA convergence from 50 iterations to $< 10$ iterations.
+
+3. **Memory Queue Scaling**:
+   - BroadFace queue size set to $N_q = 32,768$ embedding vectors ($512$-dim float32 requires only $64$ MB VRAM), fully feasible on standard GPUs (e.g., RTX 3050 6GB / cloud GPUs).
+
+---
+
+# 5. Proposed Novel Solution Architecture
+
+## System Title: **OccuPose-BroadDictNet**
+*A Multi-Task Curriculum-Guided Generative Dictionary Framework for Open-Set Face Recognition in the Wild*
+
+```mermaid
+flowchart TD
+    RawImg[Input Wild Image] --> YOLOFace[YOLOv8-Face Detector]
+    YOLOFace --> BBoxes[Bounding Boxes & 5 Facial Landmarks]
+    
+    subgraph Preprocessing & Feature Extraction
+        BBoxes --> LNetANet[ANet Attribute & Occlusion Mask Parser]
+        LNetANet --> OccCheck{Occlusion / Extreme Pose?}
+        OccCheck -- Yes: Yaw > 30 deg / Mask Present --> PIM[PIM Frontalization & D2SC-GAN Super-Res]
+        OccCheck -- No: Normal Pose & Unoccluded --> Align[Standard Affine Alignment]
+        PIM --> Align
+        Align --> Backbone[ResNet-100 Deep Feature Extractor]
+    end
+
+    subgraph Training & Loss Optimization
+        Backbone --> Embed[512-d Feature Vector f]
+        Embed --> Curricular[CurricularFace Adaptive Margin Loss]
+        Embed --> BroadQueue[BroadFace Memory Queue: N_q = 32,768]
+        BroadQueue --> Curricular
+    end
+
+    subgraph Open-Set Classifier & Output Generation
+        Embed --> DDRC[DDRC Sparse Dictionary & Residual Reconstructor]
+        LNetANet -. Occlusion Prior .-> DDRC
+        DDRC --> ResidualCheck{Min Residual r_k <= tau AND Margin >= delta?}
+        ResidualCheck -- Yes --> KnownID[Identity = Person Name & Confidence Score]
+        ResidualCheck -- No --> UnknownID[Identity = 'unknown' & Confidence Score]
+    end
+
+    KnownID --> FinalOutput[Annotated Output Image with BBoxes & Labels]
+    UnknownID --> FinalOutput
+```
+
+### Module Breakdown of Proposed Solution
+1. **Face Detection & Landmark Alignment (YOLOv8-Face + LNet)**:
+   - Single-stage YOLOv8-Face trained on WIDER FACE provides candidate bounding boxes $[x_{min}, y_{min}, x_{max}, y_{max}]$ and 5 landmark points (eyes, nose, mouth corners) even in dense crowds.
+2. **Semantic Occlusion Parsing (ANet Component)**:
+   - Predicts 40 attribute logits. Detects active occluders (`Wearing_Mask`, `Wearing_Sunglasses`, `Wearing_Hat`). Generates a binary spatial weight mask $M_{spatial}$.
+3. **Generative Pose Normalization (PIM Module)**:
+   - For faces with yaw $> 30^\circ$, PIM frontalizes the cropped face into a canonical frontal view before embedding extraction.
+4. **Feature Extraction Backbone & BroadCurricular Training**:
+   - ResNet-100 backbone trained using **CurricularFace** adaptive loss coupled with **BroadFace memory queue** ($N_q = 32,768$).
+5. **DDRC Sparse Dictionary & Residual Reconstructor (Inference & Unknown Gate)**:
+   - Class-specific dictionary matrix $D \in \mathbb{R}^{512 \times M}$ stores identity atoms.
+   - Solves $\min_{x, e} \| f - D x - e \|_2^2 + \lambda_1 \|x\|_1 + \lambda_2 \|e\|_1$.
+   - The sparse residual $e$ absorbs occlusion noise; class residuals $r_k$ decide between enrolled identity or `'unknown'`.
+
+---
+
+# 6. Implementation Roadmap & Verification Plan
+
+1. **Phase 1: Dataset Pipeline & Pre-processing**:
+   - Prepare WebFace-OCC, LFW, and CelebA datasets.
+   - Set up image loaders with random simulated occlusions (masks, sunglasses, artificial blocks) and yaw rotation augmentations.
+2. **Phase 2: Backbone & Loss Implementation**:
+   - Implement `CurricularFaceLoss` module with EMA $t$-parameter update.
+   - Implement `BroadFaceMemoryQueue` with gradient compensation tensor arithmetic.
+3. **Phase 3: DDRC & ANet Multi-Task Module**:
+   - Build dictionary training routine using Class-Wise K-SVD / Dictionary Learning.
+   - Implement ISTA/ADMM PyTorch GPU sparse solver for fast inference.
+4. **Phase 4: End-to-End Evaluation**:
+   - Benchmark on WebFace-OCC test split and LFW under occlusions.
+   - Evaluate Identification Accuracy (Rank-1), Verification TAR@FAR=$10^{-4}$, and Open-Set Unknown Rejection AUC.
+
+---
+
+# 7. Robustness Verification, Edge Cases & Real-Time Failure Modes
+
+### 7.1 Identified Failure Modes & Mitigation Mechanisms
+
+1. **Failure Mode: Severe Motion Blur & Low Resolution in Crowds**
+   - *Symptom*: Facial landmark detection (eyes, nose, mouth) fails or produces noisy affine alignment.
+   - *Mitigation*: Integration of **D2SC-GAN** dual-channel super-resolution pre-filter. Shallow path recovers high-frequency edge gradients while deep path reconstructs semantic facial contours prior to landmark estimation.
+
+2. **Failure Mode: Multi-Person Overlapping Faces in Crowded Scenes**
+   - *Symptom*: Standard Greedy NMS drops valid partially-occluded face bounding boxes.
+   - *Mitigation*: Deployment of **Soft-NMS with Gaussian decay** and anchor-free box scoring calibrated specifically on WIDER FACE dense crowd distributions.
+
+3. **Failure Mode: Extreme Out-of-Distribution Illumination (Night / Backlit)**
+   - *Symptom*: Spatial pixel intensity shift causes ANet to false-trigger occlusion flags.
+   - *Mitigation*: Adaptive Retinex / Multi-Scale Histogram Normalization applied dynamically when image global entropy drops below $\tau_{illum}$.
+
+4. **Failure Mode: Real-Time Inference Latency of Sparse Dictionary Optimization (DDRC)**
+   - *Symptom*: Standard iterative ISTA solver requires 30-50 iterations, creating a latency bottleneck ($> 100$ ms per face).
+   - *Mitigation*: Utilization of **Learned ISTA (LISTA)**—unrolling ISTA into a fixed 5-layer neural net with learned weight matrices ($W_e, W_s$), reducing sparse coding time to $< 2$ ms per face patch.
+
+### 7.2 Modular Code Architecture & Packaging Strategy
+
+```
+Face_Recognition_In_Wild/
+├── context.md                    # Synthesized literature review & system architecture
+├── models/
+│   ├── detector.py               # YOLOv8-Face detector with Soft-NMS
+│   ├── anet_attribute.py         # ANet multi-task 40-attribute & occlusion mask network
+│   ├── pim_frontalizer.py        # PIM Frontalization Generator & D2SC-GAN
+│   ├── backbone.py               # ResNet-100 feature extractor
+│   └── ddrc_solver.py            # LISTA accelerated dictionary sparse constructor
+├── losses/
+│   ├── curricular_loss.py        # CurricularFace adaptive margin loss with EMA t-tracker
+│   └── broadface_queue.py        # BroadFace FIFO memory queue with weight compensation
+├── pipeline/
+│   └── wild_face_pipeline.py     # End-to-end inference engine (Image -> Annotated Output)
+└── tests/
+    └── test_robustness.py        # Edge-case synthetic occlusion & extreme yaw test suite
+```
+
