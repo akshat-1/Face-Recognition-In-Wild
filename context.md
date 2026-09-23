@@ -204,6 +204,36 @@ $$\mathcal{L}_{PIM} = \mathcal{L}_{adv}(G, D) + \lambda_{pixel} \mathcal{L}_{pix
 
 ---
 
+## 2.7 Vision Transformer Backbone Architecture (ViT-Face / TransFace)
+* **Authors**: Alexey Dosovitskiy et al. (ICLR 2021 / arXiv:2010.11929), Dan et al. (TransFace, ICCV 2023 / arXiv:2308.14320), Zhong et al. (FaceViT, IEEE T-PAMI 2022)
+* **Core Innovation**: Replaces convolutional local sliding kernels with global Multi-Head Self-Attention (MHSA). Automatically routes attention away from occluded patch tokens (masks, sunglasses, hands) to unoccluded facial tokens across the entire image grid.
+
+```mermaid
+graph LR
+    Input[Face Image 112x112] --> PatchEmbed[Conv2d Patch Embed 8x8 -> 196 Tokens]
+    PatchEmbed --> CLS[Prepend [CLS] Token & Add Positional Encoding E_pos]
+    CLS --> TransBlocks[12 x Transformer Blocks: MHSA + MLP]
+    TransBlocks --> LayerNorm[LayerNorm & CLS Token Extract]
+    LayerNorm --> LinearHead[FC Projection Head -> L2 Norm]
+    LinearHead --> Feature[512-d Feature Embedding f_ViT]
+```
+
+### Mathematical Formulation
+Given an aligned face crop $X \in \mathbb{R}^{C \times H \times W}$ ($C=3, H=W=112$) and patch size $P=8$, the image is split into $N = \frac{H W}{P^2} = \frac{112 \times 112}{64} = 196$ patch tokens:
+
+1. **Patch Embedding & Positional Encoding**:
+   $$z_0 = [x_{class}; x_p^1 E; x_p^2 E; \dots; x_p^N E] + E_{pos}, \quad E \in \mathbb{R}^{(P^2 C) \times D}, \ E_{pos} \in \mathbb{R}^{(N+1) \times D}$$
+
+2. **Multi-Head Self-Attention (MHSA)**:
+   For queries $Q$, keys $K$, and values $V$ projected from token embeddings:
+   $$\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right) V$$
+
+3. **Feature Head & L2 Normalization**:
+   The output `[CLS]` token $z_L^0 \in \mathbb{R}^D$ is projected to $512$ dimensions and normalized:
+   $$f_{ViT} = \text{Normalize}\left(\text{BatchNorm1d}\left(W_{head} z_L^0\right), p=2\right)$$
+
+---
+
 # 3. Comparative Synthesis & Synergy Matrix
 
 | Technique | Primary Strengths | Weaknesses / Bottlenecks | Synthesis Function in Proposed Solution |
@@ -214,6 +244,7 @@ $$\mathcal{L}_{PIM} = \mathcal{L}_{adv}(G, D) + \lambda_{pixel} \mathcal{L}_{pix
 | **Unlabeled Clustering** | Exploits unannotated wild imagery; mitigates domain shift | Noisy graph edges can introduce pseudo-label error | Semi-supervised domain adaptation for wild environment tuning |
 | **DDRC** | Sparse error term $e$ isolates occlusions; residual checks detect unknown identity | Optimization loop (ISTA/ADMM) adds inference latency | Closed-set identity classification & robust 'unknown' flag gate |
 | **PIM / D2SC-GAN** | Synthesizes canonical frontal view; removes severe pose distortion | Generative artifacts if pose/resolution is extremely degraded | Frontalization & super-resolution pre-processing module for crop patches |
+| **ViT-Face / TransFace** | Global self-attention ($Q K^T / \sqrt{d_k}$) dynamically routes features around occlusions | Requires higher VRAM/compute than lightweight CNNs | High-capacity alternative backbone option (`vit_face_base` / `vit_face_large`) in `models/backbone.py` |
 
 ---
 
@@ -516,6 +547,40 @@ Where:
 | **WildFaceDetector & Soft-NMS** (`models/detector.py`) | Bodla et al. *"Soft-NMS -- Improving Object Detection With One Line of Code"*, ICCV 2017 | [`bharatsingh47/soft-nms`](https://github.com/bharatsingh47/soft-nms) | Standard Greedy NMS drops valid partially-occluded overlapping face bounding boxes in dense crowds. Soft-NMS decays confidence scores smoothly via Gaussian factor $S_i = S_i \cdot \exp(-\text{IoU}^2 / \sigma)$, preserving overlapping faces. |
 | **Real Dataset Loader** (`dataset.py`) | Huang et al. *"When Face Recognition Meets Occlusion: A New Benchmark"* (WebFace-OCC), ICASSP 2021 | WebFace-OCC ICASSP 2021 | Removed synthetic black-block occlusion masking because real wild datasets (WebFace-OCC, LFW) already contain real unconstrained occlusions. Direct image loading preserves authentic facial boundary gradients and textures. |
 | **AMP FP16 & Config Engine** (`train.py`, `config.py`) | PyTorch Automatic Mixed Precision (AMP) & Python Dataclasses | Standard PyTorch Core (`torch.amp`) | Enables Automatic Mixed Precision (`autocast('cuda')` + `GradScaler`) for $2\times$ speedup and $50\%$ VRAM reduction. Dataclass configuration system eliminates hardcoded parameters across all training phases. |
+
+---
+
+# 11. Vision Transformer (ViT-Face) vs. CNN Backbone Analysis & Occlusion Advantage
+
+### 11.1 Structural Advantage of Self-Attention Under Partial Occlusion
+
+In wild unconstrained face recognition, partial occlusions (medical masks, sunglasses, hats, hands) corrupt localized pixel regions.
+
+```
+CNN (IResNet-100): Fixed Local Convolutional Kernels (3x3)
++-------------------------------------------------------+
+| [Mask/Sunglasses Noise] --> Local Kernel Bleeds Noise |
+|                             into Adjacent Feature Map |
++-------------------------------------------------------+
+
+Vision Transformer (ViT-Face): Global Multi-Head Self-Attention
++-------------------------------------------------------+
+| [Occluded Token 14] --(Softmax Attn -> 0.001)--> [CLS] |
+| [Unoccluded Forehead Token 3] --(Attn -> 0.85)--> [CLS]|
++-------------------------------------------------------+
+```
+
+1. **Local Receptive Field vs. Global Token Self-Attention**:
+   - **CNNs (`IResNet-100`)**: Standard $3 \times 3$ convolutional filters process localized spatial neighborhoods. When a face wears a mask, local convolutions pass noisy features to adjacent layers, diluting identity representation quality.
+   - **ViT (`FaceVisionTransformer`)**: Computes pairwise query-key dot products $\text{Softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right)$ across all $196$ patch tokens simultaneously. The model dynamically zeroes out attention weights for occluded tokens and routes identity features exclusively through unoccluded tokens (forehead, eyes, ears, hair).
+
+2. **Integration into OccuPose-BroadDictNet Framework**:
+   - The Vision Transformer backbone produces a $512$-dimensional L2-normalized feature vector $f_{ViT}$.
+   - **Zero Methodology Loss**: $f_{ViT}$ feeds directly into:
+     - `CurricularFaceLoss` ($\mathcal{L}_{Curricular}$) for adaptive curriculum margin optimization.
+     - `BroadFaceMemoryQueue` ($N_q = 32,768$) for large-scale negative sample contrast.
+     - `DDRCClassifier` for $f = D x + e$ sparse error vector isolation and open-set unknown gating.
+
 
 
 
