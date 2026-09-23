@@ -9,15 +9,24 @@
 
 Real-world ("in the wild") face recognition and detection present severe multi-modal challenges:
 1. **Unconstrained Pose Variations**: Extreme yaw (up to $\pm 90^\circ$), pitch, and roll angles cause self-occlusion of key facial landmarks.
-2. **Severe Partial Occlusions**: Faces in crowds are frequently obstructed by masks, sunglasses, hats, hands, or adjacent people (e.g., WebFace-OCC benchmark).
+2. **Severe Partial Occlusions**: Faces in crowds are frequently obstructed by masks, sunglasses, hats, hands, or adjacent people (e.g., WebFace-OCC, ROF, LFW, WIDER FACE benchmarks).
 3. **Complex & Non-Ideal Illumination**: Extreme shadows, backlighting, low light, and over-exposure alter spatial pixel intensities dramatically.
 4. **Resolution & Background Clutter**: Low-resolution cropped faces embedded in crowded scenes with heavy background noise.
 5. **Open-Set Identification ("Unknown" Class)**: Real-world deployment requires distinguishing known enrolled individuals from un-enrolled / unseen identities with a calibrated confidence score.
+6. **Large Unlabeled Wild Collections**: Leveraging millions of unannotated occluded wild faces (FMD dataset, COVID face detection) without introducing pseudo-label noise.
+
+### Unified System Framework: OccuPose-BroadDictNet
+To tackle these challenges, **OccuPose-BroadDictNet** integrates five state-of-the-art deep learning methodologies into a production-grade PyTorch system:
+- **Dual SOTA Feature Backbones (`models/backbone.py`)**: Official `IResNet-100` (CNN baseline) and `FaceVisionTransformer` (`vit_face_base` / `vit_face_large` / TransFace) with Multi-Head Self-Attention ($\text{Softmax}(QK^T / \sqrt{d_k})V$) for dynamic token routing around occluded facial regions.
+- **Semi-Supervised GCN Sub-Graph Clustering (`models/gcn_cluster.py`)**: Graph Convolutional Link Predictor and BFS connected component pseudo-labeler to exploit unlabeled wild faces (FMD, COVID faces) alongside labeled datasets (ROF, LFW, WIDER).
+- **Adaptive Curriculum Loss & Negative Queueing (`losses/`)**: `CurricularFaceLoss` with EMA parameter $t$ and DDP `dist.all_reduce` synchronization, coupled with `BroadFaceMemoryQueue` ($N_q = 32,768$) for large-batch contrast.
+- **Generative Pose & Quality Transformation (`models/pim_frontalizer.py`)**: `PIMFrontalizationGAN` for off-axis profile faces ($> 20^\circ$ yaw) with bilateral symmetry blending, and `D2SCGANSuperRes` dual-channel super-resolution.
+- **Open-Set Sparse Dictionary Classifier (`models/ddrc_solver.py`)**: Vectorized `LISTASparseSolver` unrolled feedforward sparse dictionary reconstructor ($f = D x + e$) isolating occlusion corruptions into noise vector $e$.
 
 ### Problem Requirements (TPA-13)
 * **Input**: Arbitrary wild image containing single or multiple faces under non-ideal conditions.
 * **Output**: Bounding box coordinates $[x_{min}, y_{min}, x_{max}, y_{max}]$, predicted identity label ($Name$ if enrolled in database, else `'unknown'`), and a calibrated confidence score $C \in [0, 1]$.
-* **Target Reference Datasets**: WebFace-OCC (804k faces, 10.5k subjects), LFW (13.2k faces), CelebA (202k faces, 40 attributes).
+* **Target Datasets**: ROF, LFW, WIDER FACE, WebFace-OCC (Labeled) and FMD, COVID Face Detection (Unlabeled).
 
 ---
 
