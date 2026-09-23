@@ -205,32 +205,41 @@ $$\mathcal{L}_{PIM} = \mathcal{L}_{adv}(G, D) + \lambda_{pixel} \mathcal{L}_{pix
 ---
 
 ## 2.7 Vision Transformer Backbone Architecture (ViT-Face / TransFace)
-* **Authors**: Alexey Dosovitskiy et al. (ICLR 2021 / arXiv:2010.11929), Dan et al. (TransFace, ICCV 2023 / arXiv:2308.14320), Zhong et al. (FaceViT, IEEE T-PAMI 2022)
-* **Core Innovation**: Replaces convolutional local sliding kernels with global Multi-Head Self-Attention (MHSA). Automatically routes attention away from occluded patch tokens (masks, sunglasses, hands) to unoccluded facial tokens across the entire image grid.
+* **Authors**: Alexey Dosovitskiy et al. (ICLR 2021 / arXiv:2010.11929), Dan et al. (TransFace, ICCV 2023 / arXiv:2308.14320), Zhong et al. (FaceViT, IEEE T-PAMI 2022), Shi et al. (IEEE T-BIOM 2023)
+* **Core Innovation**: Replaces localized sliding convolutional kernels with global Multi-Head Self-Attention (MHSA). Automatically routes features around occluded patch tokens (medical masks, sunglasses, hats, hands) to unoccluded facial tokens across the entire image grid.
 
 ```mermaid
 graph LR
-    Input[Face Image 112x112] --> PatchEmbed[Conv2d Patch Embed 8x8 -> 196 Tokens]
-    PatchEmbed --> CLS[Prepend [CLS] Token & Add Positional Encoding E_pos]
-    CLS --> TransBlocks[12 x Transformer Blocks: MHSA + MLP]
-    TransBlocks --> LayerNorm[LayerNorm & CLS Token Extract]
-    LayerNorm --> LinearHead[FC Projection Head -> L2 Norm]
-    LinearHead --> Feature[512-d Feature Embedding f_ViT]
+    Input[Face Image 112x112x3] --> PatchEmbed[Conv2d Patch Projection P=8 -> N=196 Tokens]
+    PatchEmbed --> CLS[Prepend Class Token z_0_0 & Add 1D Positional Encoding E_pos]
+    CLS --> TransBlocks[12 x Transformer Encoder Blocks: LayerNorm + MHSA + GELU MLP]
+    TransBlocks --> LayerNorm[LayerNorm & Extract Final Class Token z_L_0]
+    LayerNorm --> LinearHead[Linear Projection 512x512 + BatchNorm1d]
+    LinearHead --> Feature[512-d L2-Normalized Embedding Vector f_ViT]
 ```
 
-### Mathematical Formulation
-Given an aligned face crop $X \in \mathbb{R}^{C \times H \times W}$ ($C=3, H=W=112$) and patch size $P=8$, the image is split into $N = \frac{H W}{P^2} = \frac{112 \times 112}{64} = 196$ patch tokens:
+### Complete In-Depth Mathematical Formulation
 
-1. **Patch Embedding & Positional Encoding**:
-   $$z_0 = [x_{class}; x_p^1 E; x_p^2 E; \dots; x_p^N E] + E_{pos}, \quad E \in \mathbb{R}^{(P^2 C) \times D}, \ E_{pos} \in \mathbb{R}^{(N+1) \times D}$$
+1. **2D Patch Partitioning & Linear Projection**:
+   An input aligned face crop $X \in \mathbb{R}^{3 \times H \times W}$ ($H=W=112$) is partitioned into $N = \frac{H \cdot W}{P^2} = \frac{112 \times 112}{8 \times 8} = 196$ non-overlapping spatial patches $X_p \in \mathbb{R}^{N \times (P^2 \cdot C)}$, where patch size $P=8$ and channels $C=3$.
+   The patches are linearly projected into embedding dimension $D=512$ using a learnable matrix $E \in \mathbb{R}^{(P^2 \cdot C) \times D}$:
+   $$z_0 = \left[ x_{\text{class}}; X_p^1 E; X_p^2 E; \dots; X_p^N E \right] + E_{\text{pos}}$$
+   where $x_{\text{class}} \in \mathbb{R}^{1 \times D}$ is a learnable `[CLS]` token and $E_{\text{pos}} \in \mathbb{R}^{(N+1) \times D}$ is 1D spatial position embedding.
 
-2. **Multi-Head Self-Attention (MHSA)**:
-   For queries $Q$, keys $K$, and values $V$ projected from token embeddings:
-   $$\text{Attention}(Q, K, V) = \text{Softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right) V$$
+2. **Transformer Encoder Block Iterations ($l = 1 \dots L$, $L=12$)**:
+   Each Transformer layer applies Layer Normalization (LN), Multi-Head Self-Attention (MHSA), and a 2-layer MLP with GELU non-linear activation (expansion ratio $r=4.0$):
+   $$z_l' = z_{l-1} + \text{MHSA}\left(\text{LN}(z_{l-1})\right)$$
+   $$z_l = z_l' + \text{MLP}\left(\text{LN}(z_l')\right)$$
 
-3. **Feature Head & L2 Normalization**:
-   The output `[CLS]` token $z_L^0 \in \mathbb{R}^D$ is projected to $512$ dimensions and normalized:
-   $$f_{ViT} = \text{Normalize}\left(\text{BatchNorm1d}\left(W_{head} z_L^0\right), p=2\right)$$
+3. **Multi-Head Self-Attention Mechanics (MHSA)**:
+   For $H=8$ attention heads and head dimension $d_k = D / H = 64$:
+   $$Q = z \cdot W_Q, \quad K = z \cdot W_K, \quad V = z \cdot W_V \quad \left(W_Q, W_K, W_V \in \mathbb{R}^{D \times D}\right)$$
+   $$\text{Attention}(Q_h, K_h, V_h) = \text{Softmax}\left(\frac{Q_h K_h^T}{\sqrt{d_k}}\right) V_h$$
+   $$\text{MHSA}(z) = \text{Concat}\left(\text{Head}_1, \dots, \text{Head}_H\right) W_O$$
+
+4. **Output Feature Projection & L2 Normalization**:
+   The final `[CLS]` token $z_L^0 \in \mathbb{R}^D$ is extracted from layer $L=12$ and projected to a $512$-dimensional normalized embedding:
+   $$f_{\text{ViT}} = \frac{W_{\text{head}} z_L^0}{\| W_{\text{head}} z_L^0 \|_2} \in \mathbb{R}^{512}$$
 
 ---
 
@@ -539,6 +548,7 @@ Where:
 | Module / Component | Primary Paper Reference & Authors | Official / Reference Repository | Design Rationale & Technical Justification |
 | :--- | :--- | :--- | :--- |
 | **IResNet-100 Backbone** (`models/backbone.py`) | Deng et al. *"ArcFace: Additive Angular Margin Loss for Deep Face Recognition"*, CVPR 2019 | [`deepinsight/insightface`](https://github.com/deepinsight/insightface) | Replaced custom/basic ResNet with the **exact standard official IResNet-100** architecture (`IBasicBlock` layout `[3, 13, 30, 3]`). Avoids non-standard simplifications and ensures 100% weight compatibility with pretrained InsightFace backbones. |
+| **FaceVisionTransformer (ViT-Face)** (`models/backbone.py`) | Dosovitskiy et al. (ICLR 2021), Dan et al. *"TransFace"*, ICCV 2023 & Zhong et al. *"FaceViT"*, IEEE T-PAMI 2022 | [`google-research/vision_transformer`](https://github.com/google-research/vision_transformer) & [`Dan-T/TransFace`](https://github.com/Dan-T/TransFace) | Integrated SOTA Vision Transformer (`vit_face_base` & `vit_face_large`) as a high-capacity alternative to CNNs. Multi-Head Self-Attention ($\text{Softmax}(QK^T / \sqrt{d_k})V$) dynamically routes features away from occluded patch tokens (masks, sunglasses) to unoccluded facial tokens across all 196 image patches simultaneously. |
 | **CurricularFace Loss** (`losses/curricular_loss.py`) | Huang et al. *"CurricularFace: Adaptive Curriculum Learning Loss for Deep Face Recognition"*, CVPR 2020 | [`HuangYG123/CurricularFace`](https://github.com/HuangYG123/CurricularFace) | Standard margin losses (ArcFace/CosFace) diverge when trained on noisy/occluded wild faces. CurricularFace uses an EMA-tracked parameter $t$ to suppress occluded hard samples early and amplify them late. Added `dist.all_reduce` for DDP multi-GPU scaling. |
 | **BroadFace Memory Queue** (`losses/broadface_queue.py`) | Kim et al. *"BroadFace: Looking at tens of thousands of people at once for face recognition"*, ECCV 2020 | ECCV 2020 Reference Implementation | GPU mini-batch memory limits (e.g. 32/64) restrict negative sample contrast. BroadFace maintains a $32,768$-capacity FIFO queue of past embeddings with weight update drift compensation ($\Delta W$), eliminating false-positive matches in crowded scenes. |
 | **DDRC LISTA Sparse Classifier** (`models/ddrc_solver.py`) | IEEE TBIOM / ACCESS 2020 (`ACCESS2901376.pdf`) & Gregor & LeCun (ICML 2010 for LISTA) | IEEE Biometrics Reference | Standard Softmax classifiers fail on open-set unknown rejection. DDRC models features as $f = D x + e$, isolating sunglass/mask occlusions into an $L_1$-sparse error vector $e$. LISTA unrolls ISTA into a 5-layer feedforward network, reducing latency from $>100$ ms to $<2$ ms. |
