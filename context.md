@@ -368,4 +368,138 @@ Face_Recognition_In_Wild/
 4. **Dataclass Configuration System**:
    - Implemented `config.py` with structured `DatasetConfig`, `ModelConfig`, `LossConfig`, `TrainConfig`, and `SystemConfig` dataclasses, ensuring zero hardcoded assumptions across the codebase.
 
+---
+
+# 9. Detailed Code Execution Flow & Multi-Layered Occlusion Mitigation Strategy
+
+### 9.1 Overall Code Flow & Pipeline Lifecycle
+
+The execution flow of **OccuPose-BroadDictNet** follows a clean 5-stage pipeline for any arbitrary image containing single or multiple faces in the wild:
+
+```mermaid
+flowchart TD
+    Input[Input Wild Image] --> Stage1[Stage 1: WildFaceDetector]
+    Stage1 --> BBoxes[Bounding Boxes & Scores via Soft-NMS]
+    
+    subgraph Stage 2: Feature Alignment & Occlusion Parsing
+        BBoxes --> Crop[Face Region Crops 112x112]
+        Crop --> ANet[ANet Attribute & Spatial Mask Parser]
+        ANet --> OccCheck{Major Occlusion or Yaw > 20°?}
+    end
+    
+    subgraph Stage 3: Generative Pose & Quality Enhancement
+        OccCheck -- Yes --> PIM[PIM Frontalizer & D2SC-GAN Super-Res]
+        OccCheck -- No --> BackboneInput[Aligned Unoccluded Crop]
+        PIM --> BackboneInput
+    end
+    
+    subgraph Stage 4: SOTA Feature Extraction
+        BackboneInput --> IResNet[IResNet-100 Backbone]
+        IResNet --> Embed[512-d L2-Normalized Feature Vector f]
+    end
+    
+    subgraph Stage 5: DDRC Open-Set Dictionary Classification
+        Embed --> LISTA[LISTA Unrolled Sparse Solver]
+        LISTA --> ResidualCalc[Compute Class Residuals r_k and Noise e]
+        ResidualCalc --> Gate{Residual <= tau AND Margin >= delta?}
+        Gate -- Yes --> Known[Identity = Person_K & Confidence]
+        Gate -- No --> Unknown[Identity = 'unknown' & Confidence]
+    end
+    
+    Known --> Output[Annotated Image Output]
+    Unknown --> Output
+```
+
+### 9.2 Step-by-Step Code Execution Path
+
+1. **Detection & Anchor Filtering (`models/detector.py`)**:
+   - `WildFaceDetector` processes the input image tensor $(1, 3, H, W)$ through convolutional feature stems.
+   - Raw bounding box predictions are rescaled to image dimensions.
+   - Candidate boxes with score $> \tau_{det}$ are filtered using **Soft-NMS with Gaussian decay** (`soft_nms_pytorch`). Unlike standard greedy NMS, Soft-NMS decays overlapping box scores rather than dropping them, preserving valid partially-occluded overlapping faces in dense crowds.
+
+2. **Semantic Attribute & Spatial Occlusion Parsing (`models/anet_attribute.py`)**:
+   - Each detected face patch is cropped and resized to $(112, 112)$.
+   - `ANetAttributeParser` extracts dual representations:
+     1. **40 Multi-Task Attribute Logits**: Evaluates active occluders (e.g. `Eyeglasses`, `Wearing_Hat`, `Mustache`, `Wearing_Mask`).
+     2. **Spatial Occlusion Map $M_{spatial}$**: A $(1, 1, 7, 7)$ spatial attention map assigning weights $[0, 1]$ across facial sub-regions (eyes, nose, mouth). Low spatial weights flag occluded zones.
+
+3. **Pose & Quality Transformation (`models/pim_frontalizer.py`)**:
+   - If severe yaw rotation ($> 20^\circ$) or occlusion is detected by ANet:
+     - `D2SCGANSuperRes` enhances low-resolution features via dual deep-shallow paths.
+     - `PIMFrontalizationGAN` encodes profile features into a canonical frontal face view $I_{frontal}$ with bilateral symmetry blending.
+
+4. **SOTA Feature Embedding Extraction (`models/backbone.py`)**:
+   - The canonical aligned crop passes through `ResNet100Backbone` (IResNet-100 with stages `[3, 13, 30, 3]`).
+   - Produces a $512$-dimensional L2-normalized feature vector $f \in \mathbb{R}^{512}$ where $\|f\|_2 = 1.0$.
+
+5. **Sparse Dictionary Reconstructor & Unknown Gate (`models/ddrc_solver.py`)**:
+   - `DDRCClassifier` projects feature vector $f$ onto class-specific dictionary columns $D = [D_1, D_2, \dots, D_K]$ using the unrolled feedforward `LISTASparseSolver`.
+   - Calculates vectorized reconstruction residual error per class: $r_k = \| f - D_k x_k \|_2^2$.
+   - **Open-Set Decision Rule**: If $r_{min} \le \tau_{residual}$ and margin ratio $\frac{r_{2nd} - r_{min}}{r_{2nd}} \ge \delta_{margin}$, assigns identity label `Person_K`. Otherwise, classifies the face as `'unknown'`.
+
+---
+
+### 9.3 Multi-Layered Occlusion Tackling Strategy
+
+Occlusion in real-world face recognition is tackled through a **4-Layered Multi-Stage Strategy**:
+
+```
++-------------------------------------------------------------------+
+| LAYER 1: Soft-NMS Crowd Detection (Preserves Overlapping BBoxes) |
++-------------------------------------------------------------------+
+                                  │
+                                  ▼
++-------------------------------------------------------------------+
+| LAYER 2: ANet Spatial Attention Masking M_spatial                 |
+| (Identifies & Suppresses Corrupted Pixel Zones)                  |
++-------------------------------------------------------------------+
+                                  │
+                                  ▼
++-------------------------------------------------------------------+
+| LAYER 3: CurricularFace Adaptive Loss                             |
+| (Suppresses Occluded Noise Early; Enforces Tight Margins Late)    |
++-------------------------------------------------------------------+
+                                  │
+                                  ▼
++-------------------------------------------------------------------+
+| LAYER 4: DDRC Explicit Sparse Error Vector Isolation (f = Dx + e) |
+| (Absorbs Occlusion Corruptions in e; Reconstructs Clean f via D)  |
++-------------------------------------------------------------------+
+```
+
+#### Layer 1: Soft-NMS for Overlapping Faces in Crowds
+Standard Non-Maximum Suppression (NMS) zeroes out bounding boxes that overlap significantly with higher-scoring detections. In wild crowds, people standing close together or partially obscuring one another are frequently dropped. `soft_nms_pytorch` decays confidence scores smoothly using a Gaussian factor:
+
+$$S_i = S_i \cdot \exp\left(-\frac{\text{IoU}(B_{max}, B_i)^2}{\sigma}\right)$$
+
+This allows partially-occluded overlapping faces to be retained for downstream processing.
+
+#### Layer 2: Spatial Occlusion Parsing (ANet Attention Masking)
+Instead of treating all face pixels equally, `ANetAttributeParser` generates a spatial attention map $M_{spatial} \in [0, 1]^{7 \times 7}$. When a subject wears sunglasses or a mask:
+- High spatial weights ($M_{ij} \to 1.0$) are assigned to unoccluded regions (e.g. forehead, chin, or eye region).
+- Low spatial weights ($M_{ij} \to 0.0$) suppress occluded regions, preventing corrupted pixels from polluting the feature embedding.
+
+#### Layer 3: CurricularFace Adaptive Loss Training
+Severely occluded images behave as "hard negatives" or noisy outliers. 
+- *Standard margin losses* (ArcFace/CosFace) attempt to force fixed angular margins on all samples, causing training instability when noisy occluded faces corrupt gradient directions.
+- *CurricularFace* dynamically modulates negative cosine similarities using adaptive parameter $t$:
+
+$$N(t, \cos \theta_j) = \begin{cases} 
+\cos \theta_j & \text{if } \cos(\theta_{y_i} + m) \ge \cos \theta_j \quad (\text{Easy Sample}) \\ 
+\cos \theta_j (t + \cos \theta_j) & \text{if } \cos(\theta_{y_i} + m) < \cos \theta_j \quad (\text{Hard Sample}) 
+\end{cases}$$
+
+During early training ($t \approx 0$), occluded hard samples are suppressed so the network learns clean facial geometry first. As training progresses ($t \to 1$), occluded samples receive amplified gradients, forcing the backbone to learn identity representations using unoccluded facial cues.
+
+#### Layer 4: DDRC Sparse Error Vector Isolation ($f = D x + e$)
+During inference, a test feature $f$ extracted from an occluded face contains corrupted components. **DDRC** models $f$ explicitly as:
+
+$$f = D x + e = \sum_{k=1}^{K} D_k x_k + e$$
+
+Where:
+- $D x$: Clean linear combination of enrolled identity dictionary atoms.
+- $e$: **Sparse occlusion noise vector**. Corruptions caused by masks, sunglasses, or hands are isolated into $e$ ($L_1$-sparse error).
+- By subtracting $e$ prior to computing class residuals ($r_k = \| (f - e) - D_k x_k \|_2^2$), the system accurately matches occluded faces to enrolled identities while rejecting unknown impostors.
+
+
 
