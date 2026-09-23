@@ -2,83 +2,99 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class ResNetBlock(nn.Module):
-    def __init__(self, channels: int):
-        super(ResNetBlock, self).__init__()
-        self.conv1 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
-        self.bn1 = nn.BatchNorm2d(channels)
-        self.prelu1 = nn.PReLU(channels)
-        self.conv2 = nn.Conv2d(channels, channels, kernel_size=3, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(channels)
-        self.prelu2 = nn.PReLU(channels)
+class IResNetBlock(nn.Module):
+    """
+    Improved ResNet (IResNet) Residual Block for Deep Face Recognition (ArcFace / CurricularFace).
+    Structure: BN1 -> Conv3x3 -> BN2 -> PReLU -> Conv3x3 -> BN3 + Residual
+    """
+    def __init__(self, in_planes: int, planes: int, stride: int = 1):
+        super(IResNetBlock, self).__init__()
+        self.bn1 = nn.BatchNorm2d(in_planes)
+        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes)
+        self.prelu = nn.PReLU(planes)
+        self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
+        self.bn3 = nn.BatchNorm2d(planes)
+
+        if stride != 1 or in_planes != planes:
+            self.downsample = nn.Sequential(
+                nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes)
+            )
+        else:
+            self.downsample = None
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         residual = x
-        out = self.prelu1(self.bn1(self.conv1(x)))
-        out = self.bn2(self.conv2(out))
-        out = self.prelu2(out + residual)
-        return out
+        out = self.bn1(x)
+        out = self.conv1(out)
+        out = self.bn2(out)
+        out = self.prelu(out)
+        out = self.conv2(out)
+        out = self.bn3(out)
+
+        if self.downsample is not None:
+            residual = self.downsample(x)
+
+        return out + residual
 
 class ResNet100Backbone(nn.Module):
     """
-    Deep ResNet Identity Embedding Extractor for Face Recognition in the Wild.
-    Maps 112x112 face crop images to a 512-dimensional L2-normalized feature embedding vector f.
-    Supports lightweight ResNet (3, 4, 6, 3) for fast CPU inference and full ResNet-100 (3, 13, 30, 3) for high-capacity training.
+    SOTA Improved ResNet-100 (IResNet-100) Identity Embedding Extractor for Deep Face Recognition.
+    Block stages: [3, 13, 30, 3] with 512-d L2-normalized feature output.
     """
-    def __init__(self, embedding_dim: int = 512, layers: tuple = (3, 4, 6, 3)):
+    def __init__(self, embedding_dim: int = 512, layers: tuple = (3, 13, 30, 3), fp16: bool = False):
         super(ResNet100Backbone, self).__init__()
+        self.in_planes = 64
         self.embedding_dim = embedding_dim
-        
-        # Stem
-        self.input_layer = nn.Sequential(
+        self.fp16 = fp16
+
+        # Stem: Conv3x3 64 -> BN -> PReLU
+        self.stem = nn.Sequential(
             nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
             nn.BatchNorm2d(64),
             nn.PReLU(64)
         )
-        
-        # Stage 1: 64 channels
-        self.layer1 = self._make_layer(64, num_blocks=layers[0])
-        # Stage 2: 128 channels
-        self.down1 = nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1, bias=False)
-        self.layer2 = self._make_layer(128, num_blocks=layers[1])
-        # Stage 3: 256 channels
-        self.down2 = nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1, bias=False)
-        self.layer3 = self._make_layer(256, num_blocks=layers[2])
-        # Stage 4: 512 channels
-        self.down3 = nn.Conv2d(256, 512, kernel_size=3, stride=2, padding=1, bias=False)
-        self.layer4 = self._make_layer(512, num_blocks=layers[3])
-        
-        # Output embedding head
-        self.output_layer = nn.Sequential(
+
+        # Stage 1: 64 planes, stride 2 downsampling on 1st block
+        self.layer1 = self._make_layer(64, layers[0], stride=2)
+        # Stage 2: 128 planes, stride 2 downsampling on 1st block
+        self.layer2 = self._make_layer(128, layers[1], stride=2)
+        # Stage 3: 256 planes, stride 2 downsampling on 1st block
+        self.layer3 = self._make_layer(256, layers[2], stride=2)
+        # Stage 4: 512 planes, stride 2 downsampling on 1st block
+        self.layer4 = self._make_layer(512, layers[3], stride=2)
+
+        # Feature Output FC Head
+        self.fc_head = nn.Sequential(
             nn.BatchNorm2d(512),
             nn.Dropout(0.4),
             nn.Flatten(),
-            nn.Linear(512 * 14 * 14, embedding_dim, bias=False),
+            nn.Linear(512 * 7 * 7, embedding_dim, bias=False),
             nn.BatchNorm1d(embedding_dim)
         )
 
-    def _make_layer(self, channels: int, num_blocks: int) -> nn.Sequential:
-        blocks = []
-        for _ in range(num_blocks):
-            blocks.append(ResNetBlock(channels))
-        return nn.Sequential(*blocks)
+    def _make_layer(self, planes: int, blocks: int, stride: int = 1) -> nn.Sequential:
+        layers = []
+        layers.append(IResNetBlock(self.in_planes, planes, stride))
+        self.in_planes = planes
+        for _ in range(1, blocks):
+            layers.append(IResNetBlock(self.in_planes, planes, stride=1))
+        return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            x: (batch_size, 3, 112, 112) normalized input face image [-1, 1]
+            x: (B, 3, 112, 112) normalized input face image [-1, 1]
         Returns:
-            f: (batch_size, 512) L2-normalized identity embedding vector
+            f: (B, 512) L2-normalized identity feature vector
         """
-        out = self.input_layer(x)
+        out = self.stem(x)
         out = self.layer1(out)
-        out = self.down1(out)
         out = self.layer2(out)
-        out = self.down2(out)
         out = self.layer3(out)
-        out = self.down3(out)
         out = self.layer4(out)
-        
-        embeddings = self.output_layer(out)
+
+        embeddings = self.fc_head(out)
         norm_embeddings = F.normalize(embeddings, p=2, dim=1)
         return norm_embeddings

@@ -1,7 +1,6 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-import numpy as np
 
 def soft_nms_pytorch(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5, sigma: float = 0.5, score_threshold: float = 0.3):
     """
@@ -9,7 +8,7 @@ def soft_nms_pytorch(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: f
     Prevents dropping partially-occluded overlapping face bounding boxes.
     """
     if boxes.numel() == 0:
-        return torch.empty((0, 4)), torch.empty((0,))
+        return torch.empty((0, 4), device=boxes.device), torch.empty((0,), device=scores.device)
         
     boxes = boxes.clone()
     scores = scores.clone()
@@ -28,8 +27,8 @@ def soft_nms_pytorch(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: f
             x2 = torch.min(boxes[i, 2], boxes[pos, 2])
             y2 = torch.min(boxes[i, 3], boxes[pos, 3])
             
-            w = torch.max(torch.tensor(0.0), x2 - x1)
-            h = torch.max(torch.tensor(0.0), y2 - y1)
+            w = torch.clamp(x2 - x1, min=0.0)
+            h = torch.clamp(y2 - y1, min=0.0)
             inter = w * h
             
             area1 = (boxes[i, 2] - boxes[i, 0]) * (boxes[i, 3] - boxes[i, 1])
@@ -47,8 +46,8 @@ def soft_nms_pytorch(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: f
 
 class WildFaceDetector(nn.Module):
     """
-    Single-Stage Convolutional Face Detector with Soft-NMS post-processing.
-    Detects face bounding boxes [x1, y1, x2, y2] and 5 facial landmark points in non-ideal scenes.
+    Production Deep Convolutional Face Detector with Soft-NMS post-processing.
+    Detects face bounding boxes [x1, y1, x2, y2] in crowded, occluded, and non-ideal wild scenes.
     """
     def __init__(self):
         super(WildFaceDetector, self).__init__()
@@ -92,7 +91,7 @@ class WildFaceDetector(nn.Module):
         boxes_scaled[:, 2] = (boxes_flat[:, 0] + boxes_flat[:, 2]) * img_w
         boxes_scaled[:, 3] = (boxes_flat[:, 1] + boxes_flat[:, 3]) * img_h
         
-        # Pre-filter by score_threshold before Soft-NMS to reduce N from 3000 to ~10
+        # Pre-filter by score_threshold before Soft-NMS to reduce N
         valid_mask = scores_flat >= score_threshold
         if not torch.any(valid_mask):
             return torch.empty((0, 4), device=img_tensor.device), torch.empty((0,), device=img_tensor.device)

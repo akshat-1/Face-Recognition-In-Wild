@@ -2,6 +2,7 @@ import math
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import torch.distributed as dist
 
 class CurricularFaceLoss(nn.Module):
     """
@@ -10,6 +11,8 @@ class CurricularFaceLoss(nn.Module):
     Dynamically adjusts the relative importance of easy and hard samples during training:
     - Early training: suppresses hard negative samples to avoid divergence from noisy/corrupted faces.
     - Late training: amplifies hard misclassified samples to enforce sharp inter-class margins.
+    
+    Includes PyTorch Distributed Data Parallel (DDP) all-reduce support and AMP FP16 safeguards.
     """
     def __init__(self, in_features: int, num_classes: int, s: float = 64.0, m: float = 0.50, alpha: float = 0.99):
         super(CurricularFaceLoss, self).__init__()
@@ -26,7 +29,7 @@ class CurricularFaceLoss(nn.Module):
         # Exponential Moving Average parameter t
         self.register_buffer('t', torch.zeros(1))
         
-        # Margin constants
+        # Trigonometric constants
         self.cos_m = math.cos(m)
         self.sin_m = math.sin(m)
         self.threshold = math.cos(math.pi - m)
@@ -35,16 +38,16 @@ class CurricularFaceLoss(nn.Module):
     def forward(self, embeddings: torch.Tensor, labels: torch.Tensor) -> torch.Tensor:
         """
         Args:
-            embeddings: (batch_size, in_features) L2-normalized feature embeddings
-            labels: (batch_size,) ground truth class indices
+            embeddings: (B, in_features) L2-normalized feature embeddings
+            labels: (B,) ground truth class indices
         Returns:
             loss: scalar cross-entropy loss with adaptive curricular margin modulation
         """
-        # Ensure L2 normalization of weights and embeddings
-        norm_embeddings = F.normalize(embeddings, p=2, dim=1)
-        norm_weight = F.normalize(self.weight, p=2, dim=1)
+        # Ensure FP32 precision for margin and cosine trigonometric calculations under AMP
+        norm_embeddings = F.normalize(embeddings.float(), p=2, dim=1)
+        norm_weight = F.normalize(self.weight.float(), p=2, dim=1)
         
-        # Cosine similarity matrix: (batch_size, num_classes)
+        # Cosine similarity matrix: (B, num_classes)
         cos_theta = F.linear(norm_embeddings, norm_weight)
         cos_theta = cos_theta.clamp(-1.0 + 1e-7, 1.0 - 1e-7)
         
@@ -55,10 +58,13 @@ class CurricularFaceLoss(nn.Module):
         
         cos_yi = cos_theta[one_hot.bool()]
         
-        # Update EMA curriculum parameter t during training
+        # Update EMA curriculum parameter t during training across DDP nodes
         if self.training:
             with torch.no_grad():
                 mean_cos = cos_yi.mean()
+                if dist.is_available() and dist.is_initialized():
+                    dist.all_reduce(mean_cos, op=dist.ReduceOp.SUM)
+                    mean_cos /= dist.get_world_size()
                 self.t = self.alpha * self.t + (1.0 - self.alpha) * mean_cos
         
         # Target angle margin: cos(theta + m) = cos(theta)*cos(m) - sin(theta)*sin(m)
@@ -69,15 +75,10 @@ class CurricularFaceLoss(nn.Module):
         cos_yi_m = torch.where(cos_yi > self.threshold, cos_yi_m, cos_yi - self.mm)
         
         # Build modulated negative similarity matrix
-        # For target class (positive), use cos(theta + m)
-        # For non-target classes (negatives), apply adaptive curriculum modulation N(t, cos_theta_j)
         target_margin = cos_yi_m.view(-1, 1)
-        
-        # Mask for non-ground truth classes
         mask = 1.0 - one_hot
         
         # Hard sample criterion: cos(theta_yi + m) < cos(theta_j)
-        # i.e., negative similarity is higher than margin-adjusted ground truth similarity
         is_hard = (target_margin < cos_theta) & mask.bool()
         
         # Modulation function N(t, cos_theta_j) = cos_theta_j * (t + cos_theta_j) for hard negatives

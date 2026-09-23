@@ -1,6 +1,5 @@
 import os
 import glob
-import random
 from PIL import Image
 import torch
 import torch.utils.data as data
@@ -8,102 +7,107 @@ import torchvision.transforms as transforms
 
 class WildFaceDataset(data.Dataset):
     """
-    Dataset loader for WebFace-OCC / LFW / Custom Face Datasets.
-    Applies synthetic random occlusions (masks, sunglasses, artificial spatial blocks)
-    and spatial data augmentations to simulate real-world unconstrained wild environments.
+    Production Dataset loader for large-scale wild face datasets containing real occlusions
+    (e.g., WebFace-OCC, LFW, MS1MV2, CASIA-WebFace).
+    
+    Reads real unconstrained wild face images directly without adding artificial occlusions.
     """
-    def __init__(self, root_dir: str = None, transform=None, is_train: bool = True, num_synthetic_samples: int = 1000):
+    def __init__(self, root_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
         super(WildFaceDataset, self).__init__()
         self.root_dir = root_dir
         self.is_train = is_train
         
         if transform is None:
-            self.transform = transforms.Compose([
-                transforms.Resize((112, 112)),
-                transforms.RandomHorizontalFlip() if is_train else transforms.Lambda(lambda x: x),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-            ])
+            if is_train:
+                self.transform = transforms.Compose([
+                    transforms.Resize(image_size),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+                ])
+            else:
+                self.transform = transforms.Compose([
+                    transforms.Resize(image_size),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+                ])
         else:
             self.transform = transform
             
         self.samples = []
         self.class_to_idx = {}
         
-        # Load from image directory structure (root/class_name/img.jpg) if directory exists
+        # Load from image directory structure: root/class_name/img.jpg
         if root_dir and os.path.exists(root_dir):
             classes = sorted([d for d in os.listdir(root_dir) if os.path.isdir(os.path.join(root_dir, d))])
             self.class_to_idx = {cls_name: i for i, cls_name in enumerate(classes)}
             
+            valid_extensions = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
             for cls_name in classes:
                 cls_dir = os.path.join(root_dir, cls_name)
                 for img_name in os.listdir(cls_dir):
-                    if img_name.lower().endswith(('.jpg', '.jpeg', '.png')):
+                    if img_name.lower().endswith(valid_extensions):
                         self.samples.append((os.path.join(cls_dir, img_name), self.class_to_idx[cls_name]))
         else:
-            # Generate synthetic samples if dataset directory is not provided (for quick dry-run testing)
+            # Fallback synthetic tensor generator for testing when no path is supplied
             self.class_to_idx = {f"Subject_{i}": i for i in range(50)}
-            for i in range(num_synthetic_samples):
-                self.samples.append(("synthetic", random.randint(0, 49)))
+            for i in range(500):
+                self.samples.append(("dummy_tensor", i % 50))
 
     def __len__(self):
         return len(self.samples)
 
-    def _apply_synthetic_occlusion(self, img_tensor: torch.Tensor) -> torch.Tensor:
-        """
-        Simulates partial occlusions (e.g. medical masks, sunglasses, hands).
-        Applies a zeroed-out rectangular patch on 15-40% of the face region.
-        """
-        if not self.is_train or random.random() > 0.5:
-            return img_tensor
-            
-        _, h, w = img_tensor.shape
-        occ_h = random.randint(int(h * 0.2), int(h * 0.45))
-        occ_w = random.randint(int(w * 0.3), int(w * 0.8))
-        
-        top = random.randint(int(h * 0.3), h - occ_h)
-        left = random.randint(0, w - occ_w)
-        
-        img_tensor[:, top:top + occ_h, left:left + occ_w] = -1.0 # Normalized black block
-        return img_tensor
-
     def __getitem__(self, idx):
         path, label = self.samples[idx]
         
-        if path == "synthetic":
+        if path == "dummy_tensor":
             img_tensor = torch.randn(3, 112, 112)
         else:
             img = Image.open(path).convert('RGB')
             img_tensor = self.transform(img)
             
-        # Apply random synthetic occlusions during training
-        img_tensor = self._apply_synthetic_occlusion(img_tensor)
-        
         return img_tensor, label
 
 class CelebAAttributeDataset(data.Dataset):
     """
     Dataset loader for CelebA multi-task 40-attribute training.
-    Returns face crop tensor and 40 binary attribute target labels.
+    Returns 112x112 face crop tensor and 40 binary attribute ground-truth targets.
     """
-    def __init__(self, root_dir: str = None, is_train: bool = True, num_synthetic_samples: int = 1000):
+    def __init__(self, root_dir: str = None, attr_file: str = None, is_train: bool = True, image_size=(112, 112)):
         super(CelebAAttributeDataset, self).__init__()
         self.root_dir = root_dir
         self.is_train = is_train
         
         self.transform = transforms.Compose([
-            transforms.Resize((112, 112)),
+            transforms.Resize(image_size),
             transforms.ToTensor(),
             transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
         ])
         
-        self.num_samples = num_synthetic_samples
+        self.samples = []
+        if root_dir and attr_file and os.path.exists(attr_file):
+            with open(attr_file, 'r') as f:
+                lines = f.readlines()[2:] # Skip header
+                for line in lines:
+                    parts = line.strip().split()
+                    img_name = parts[0]
+                    # Convert -1/1 attribute values to 0/1 binary targets
+                    attrs = [1.0 if int(x) == 1 else 0.0 for x in parts[1:]]
+                    self.samples.append((os.path.join(root_dir, img_name), torch.tensor(attrs, dtype=torch.float32)))
+        else:
+            # Fallback synthetic attribute samples for dry-run testing
+            for i in range(200):
+                self.samples.append(("dummy_attr", (torch.rand(40) > 0.5).float()))
 
     def __len__(self):
-        return self.num_samples
+        return len(self.samples)
 
     def __getitem__(self, idx):
-        # Generates synthetic attribute targets (40 binary targets 0 or 1)
-        img_tensor = torch.randn(3, 112, 112)
-        attr_targets = (torch.rand(40) > 0.5).float()
+        path, attr_targets = self.samples[idx]
+        if path == "dummy_attr":
+            img_tensor = torch.randn(3, 112, 112)
+        else:
+            img = Image.open(path).convert('RGB')
+            img_tensor = self.transform(img)
+            
         return img_tensor, attr_targets
