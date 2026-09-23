@@ -17,10 +17,21 @@ from models.backbone import ResNet100Backbone, vit_face_base
 from models.detector import WildFaceDetector, soft_nms_pytorch
 from pipeline.wild_face_pipeline import OccuPoseBroadDictPipeline
 
+from models.gcn_cluster import GCNLinkPredictor
+
 class TestOccuPoseBroadDictNet(unittest.TestCase):
 
     def setUp(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def test_gcn_clustering(self):
+        gcn = GCNLinkPredictor(feature_dim=512, hidden_dim=256, k_neighbors=3).to(self.device)
+        unlabeled_embeds = torch.randn(10, 512, device=self.device)
+        
+        pseudo_labels, active_mask = gcn.generate_pseudo_labels(unlabeled_embeds, confidence_threshold=0.5, start_class_idx=100)
+        self.assertEqual(pseudo_labels.shape, (10,))
+        self.assertEqual(active_mask.shape, (10,))
+        print(f"✓ GCN Sub-Graph Clustering Test Passed: Clustered {active_mask.sum().item()}/10 unlabeled face embeddings.")
 
     def test_vit_face_backbone(self):
         vit = vit_face_base(embedding_dim=512).to(self.device)

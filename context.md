@@ -565,7 +565,64 @@ Where:
 | **PIM Pose Frontalizer & D2SC-GAN** (`models/pim_frontalizer.py`) | Zhao et al. *"Towards Pose Invariant Face Recognition in the Wild"*, CVPR 2018 & Bhattacharjee & Das, IEEE TBIOM 2020 | CVPR 2018 PIM Reference | Profile faces ($> 20^\circ$ yaw) suffer extreme self-occlusion. PIM frontalizes profile face crops into canonical frontal views with bilateral symmetry blending, while D2SC-GAN restores low-resolution faces prior to feature extraction. |
 | **WildFaceDetector & Soft-NMS** (`models/detector.py`) | Bodla et al. *"Soft-NMS -- Improving Object Detection With One Line of Code"*, ICCV 2017 | [`bharatsingh47/soft-nms`](https://github.com/bharatsingh47/soft-nms) | Standard Greedy NMS drops valid partially-occluded overlapping face bounding boxes in dense crowds. Soft-NMS decays confidence scores smoothly via Gaussian factor $S_i = S_i \cdot \exp(-\text{IoU}^2 / \sigma)$, preserving overlapping faces. |
 | **Real Dataset Loader** (`dataset.py`) | Huang et al. *"When Face Recognition Meets Occlusion: A New Benchmark"* (WebFace-OCC), ICASSP 2021 | WebFace-OCC ICASSP 2021 | Removed synthetic black-block occlusion masking because real wild datasets (WebFace-OCC, LFW) already contain real unconstrained occlusions. Direct image loading preserves authentic facial boundary gradients and textures. |
-| **AMP FP16 & Config Engine** (`train.py`, `config.py`) | PyTorch Automatic Mixed Precision (AMP) & Python Dataclasses | Standard PyTorch Core (`torch.amp`) | Enables Automatic Mixed Precision (`autocast('cuda')` + `GradScaler`) for $2\times$ speedup and $50\%$ VRAM reduction. Dataclass configuration system eliminates hardcoded parameters across all training phases. |
+---
+
+# 12. Semi-Supervised Handling of Unlabeled Wild Face Datasets (GCN Sub-Graph Clustering)
+
+### 12.1 Explicit Labeled vs. Unlabeled Dataset Differentiation
+
+Real-world deployment involves two distinct data streams:
+1. **Labeled Datasets**: ROF (Real-world Occluded Faces: sunglasses, neutral, masked), LFW, WIDER FACE mask detection. These images possess ground-truth identity targets $y_i \in \{0 \dots K-1\}$. Returned by `WildFaceDataset` (`dataset.py`) with boolean flag `is_labeled = True`.
+2. **Unlabeled Datasets**: Millions of unannotated complex occluded face collections (FMD dataset, COVID face detection, unlabelled web crawls). Returned by `UnlabeledFaceDataset` (`dataset.py`) with identity indicator $y = -1$ and boolean flag `is_labeled = False`.
+
+```mermaid
+flowchart TD
+    subgraph Data Loading Stream
+        DataLabeled[Labeled Images: ROF, LFW, WIDER] --> Dataset1[WildFaceDataset: is_labeled = True]
+        DataUnlabeled[Unlabeled Images: FMD, COVID Faces] --> Dataset2[UnlabeledFaceDataset: is_labeled = False]
+    end
+
+    subgraph Phase 1: Supervised Backbone Training
+        Dataset1 --> Backbone[IResNet-100 / ViT-Face Backbone]
+        Backbone --> Loss1[CurricularFace Loss L_labeled]
+    end
+
+    subgraph Phase 3: Semi-Supervised GCN Clustering
+        Dataset2 --> ExtractEmbed[Extract Unlabeled Feature Embeddings]
+        ExtractEmbed --> GCN[GCNLinkPredictor: models/gcn_cluster.py]
+        GCN --> KNNGraph[Build KNN Affinity Graph A_tilde]
+        KNNGraph --> EdgeProb[Predict Edge Connectivity Probabilities P_edge]
+        EdgeProb --> PseudoLabel[Connected Component Pseudo-Labeler: y_tilde]
+        PseudoLabel --> Loss2[CurricularFace Loss L_pseudo on High-Confidence Clusters]
+    end
+
+    Loss1 --> TotalLoss[Total Loss = L_labeled + lambda_semi * L_pseudo]
+    Loss2 --> TotalLoss
+```
+
+### 12.2 GCN Sub-Graph Clustering & Pseudo-Label Generation Mechanics
+
+* **Paper Reference**: RoyChowdhury et al., *"Improving Face Recognition by Clustering Unlabeled Faces in the Wild"*, ECCV 2020 (`arXiv:2007.06995`).
+* **Implementation**: `GCNLinkPredictor` in `models/gcn_cluster.py`.
+
+1. **KNN Feature Affinity Graph Construction**:
+   For a mini-batch of $B$ unlabeled embeddings $F_{\text{unlabeled}} \in \mathbb{R}^{B \times 512}$, cosine similarity matrix $S = F F^T$ is calculated. An adjacency matrix $A$ is constructed using Top-$K$ nearest neighbors ($K=5$) with self-loops:
+   $$\tilde{A} = A + I_B, \quad \tilde{D}_{ii} = \sum_j \tilde{A}_{ij}$$
+   Symmetric degree normalization yields:
+   $$\hat{A} = \tilde{D}^{-\frac{1}{2}} \tilde{A} \tilde{D}^{-\frac{1}{2}}$$
+
+2. **2-Layer Graph Convolutional Network**:
+   $$H^{(1)} = \text{PReLU}\left(\hat{A} F W^{(0)}\right), \quad H^{(2)} = \text{PReLU}\left(\hat{A} H^{(1)} W^{(1)}\right)$$
+
+3. **Pairwise Edge Connectivity Prediction**:
+   An MLP evaluates pair representations $[h_i; h_j]$ to predict whether node $i$ and node $j$ belong to the same subject despite mask/sunglass occlusions:
+   $$P(e_{ij} = 1) = \text{Sigmoid}\left(\text{MLP}\left([h_i; h_j]\right)\right)$$
+
+4. **Confidence-Gated Pseudo-Labeling**:
+   Pairs with $P(e_{ij} = 1) \ge \tau_{\text{cluster}}$ ($\tau_{\text{cluster}} = 0.75$) form connected components. Sub-graph clusters with $\ge 2$ samples are assigned pseudo-identity class labels $\tilde{y}$.
+   The backbone is fine-tuned using the joint semi-supervised objective:
+   $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{Curricular}}(\text{labeled}) + \lambda_{\text{semi}} \mathcal{L}_{\text{Curricular}}(\text{pseudo-labeled})$$
+
 
 ---
 

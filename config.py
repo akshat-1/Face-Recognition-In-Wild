@@ -4,21 +4,22 @@ from typing import List, Tuple
 
 @dataclass
 class DatasetConfig:
-    train_data_dir: str = ""
+    train_data_dir: str = "" # Path to labeled face dataset (ROF, LFW, WIDER)
+    unlabeled_data_dir: str = "" # Path to unlabeled face dataset (FMD, COVID faces, web crawls)
     val_data_dir: str = ""
     celeba_dir: str = ""
     image_size: Tuple[int, int] = (112, 112)
     num_classes: int = 10575 # Default WebFace-OCC number of identities
     num_workers: int = 4
-    use_synthetic_occlusions: bool = False # Real wild dataset already contains real occlusions
 
 @dataclass
 class ModelConfig:
-    backbone_type: str = "iresnet100" # SOTA Improved ResNet-100 (3, 13, 30, 3)
+    backbone_type: str = "iresnet100" # "iresnet100" or "vit_face_base"
     embedding_dim: int = 512
     fp16: bool = True
     use_pim_frontalizer: bool = True
     use_anet_attributes: bool = True
+    use_gcn_clustering: bool = True
     lista_num_layers: int = 5
     atoms_per_class: int = 20
 
@@ -29,6 +30,8 @@ class LossConfig:
     ema_alpha: float = 0.99
     queue_size: int = 32768
     broadface_momentum: float = 0.99
+    lambda_semi: float = 0.5 # Weight for semi-supervised pseudo-labeled loss
+    pseudo_label_threshold: float = 0.75 # Confidence threshold for GCN graph clustering
 
 @dataclass
 class TrainConfig:
