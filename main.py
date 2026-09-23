@@ -17,7 +17,7 @@ def train_one_epoch_demo(num_classes: int = 50, batch_size: int = 8):
     print(f"Using device: {device}")
     
     # 1. Instantiate ResNet-100 backbone (embedding dim = 512)
-    backbone = ResNet100Backbone(embedding_dim=512, layers=(3, 4, 6, 3)).to(device)
+    backbone = ResNet100Backbone(embedding_dim=512).to(device)
     
     # 2. Instantiate CurricularFace adaptive loss
     curricular_loss_fn = CurricularFaceLoss(in_features=512, num_classes=num_classes, s=64.0, m=0.5).to(device)

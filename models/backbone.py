@@ -2,30 +2,34 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 
-class IResNetBlock(nn.Module):
+__all__ = ['IResNet', 'IBasicBlock', 'iresnet18', 'iresnet34', 'iresnet50', 'iresnet100', 'iresnet200', 'ResNet100Backbone']
+
+class IBasicBlock(nn.Module):
     """
-    Improved ResNet (IResNet) Residual Block for Deep Face Recognition (ArcFace / CurricularFace).
-    Structure: BN1 -> Conv3x3 -> BN2 -> PReLU -> Conv3x3 -> BN3 + Residual
+    Standard InsightFace / ArcFace / CurricularFace Improved Basic Block (IBasicBlock).
+    Structure: BN1 -> Conv3x3 (s=1) -> BN2 -> PReLU -> Conv3x3 (s=stride) -> BN3 + Residual
     """
-    def __init__(self, in_planes: int, planes: int, stride: int = 1):
-        super(IResNetBlock, self).__init__()
-        self.bn1 = nn.BatchNorm2d(in_planes)
-        self.conv1 = nn.Conv2d(in_planes, planes, kernel_size=3, stride=1, padding=1, bias=False)
-        self.bn2 = nn.BatchNorm2d(planes)
+    expansion = 1
+
+    def __init__(self, inplanes: int, planes: int, stride: int = 1, downsample=None,
+                 groups: int = 1, base_width: int = 64, dilation: int = 1):
+        super(IBasicBlock, self).__init__()
+        if groups != 1 or base_width != 64:
+            raise ValueError('IBasicBlock only supports groups=1 and base_width=64')
+        if dilation > 1:
+            raise NotImplementedError("Dilation > 1 not supported in IBasicBlock")
+
+        self.bn1 = nn.BatchNorm2d(inplanes, eps=1e-05)
+        self.conv1 = nn.Conv2d(inplanes, planes, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn2 = nn.BatchNorm2d(planes, eps=1e-05)
         self.prelu = nn.PReLU(planes)
         self.conv2 = nn.Conv2d(planes, planes, kernel_size=3, stride=stride, padding=1, bias=False)
-        self.bn3 = nn.BatchNorm2d(planes)
-
-        if stride != 1 or in_planes != planes:
-            self.downsample = nn.Sequential(
-                nn.Conv2d(in_planes, planes, kernel_size=1, stride=stride, bias=False),
-                nn.BatchNorm2d(planes)
-            )
-        else:
-            self.downsample = None
+        self.bn3 = nn.BatchNorm2d(planes, eps=1e-05)
+        self.downsample = downsample
+        self.stride = stride
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
-        residual = x
+        identity = x
         out = self.bn1(x)
         out = self.conv1(out)
         out = self.bn2(out)
@@ -34,52 +38,98 @@ class IResNetBlock(nn.Module):
         out = self.bn3(out)
 
         if self.downsample is not None:
-            residual = self.downsample(x)
+            identity = self.downsample(x)
 
-        return out + residual
+        out += identity
+        return out
 
-class ResNet100Backbone(nn.Module):
+class IResNet(nn.Module):
     """
-    SOTA Improved ResNet-100 (IResNet-100) Identity Embedding Extractor for Deep Face Recognition.
-    Block stages: [3, 13, 30, 3] with 512-d L2-normalized feature output.
+    Standard InsightFace / ArcFace / CurricularFace Improved ResNet (IResNet) Architecture.
+    Matches deepinsight/insightface official reference implementation.
     """
-    def __init__(self, embedding_dim: int = 512, layers: tuple = (3, 13, 30, 3), fp16: bool = False):
-        super(ResNet100Backbone, self).__init__()
-        self.in_planes = 64
-        self.embedding_dim = embedding_dim
+    fc_scale = 7 * 7
+
+    def __init__(self,
+                 block,
+                 layers,
+                 dropout: float = 0.4,
+                 num_features: int = 512,
+                 zero_init_residual: bool = False,
+                 groups: int = 1,
+                 width_per_group: int = 64,
+                 replace_stride_with_dilation=None,
+                 fp16: bool = False):
+        super(IResNet, self).__init__()
+        self.extra_gflops = 0.0
         self.fp16 = fp16
+        self.inplanes = 64
+        self.dilation = 1
+        
+        if replace_stride_with_dilation is None:
+            replace_stride_with_dilation = [False, False, False]
+        if len(replace_stride_with_dilation) != 3:
+            raise ValueError(f"replace_stride_with_dilation should be None or 3-tuple, got {replace_stride_with_dilation}")
+            
+        self.groups = groups
+        self.base_width = width_per_group
+        
+        # Stem: Conv 3 -> 64 (3x3, stride=1, padding=1, bias=False) -> BN1 -> PReLU
+        self.conv1 = nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False)
+        self.bn1 = nn.BatchNorm2d(64, eps=1e-05)
+        self.prelu = nn.PReLU(64)
+        
+        # Four Residual Stages
+        self.layer1 = self._make_layer(block, 64, layers[0], stride=2)
+        self.layer2 = self._make_layer(block, 128, layers[1], stride=2,
+                                       dilate=replace_stride_with_dilation[0])
+        self.layer3 = self._make_layer(block, 256, layers[2], stride=2,
+                                       dilate=replace_stride_with_dilation[1])
+        self.layer4 = self._make_layer(block, 512, layers[3], stride=2,
+                                       dilate=replace_stride_with_dilation[2])
+        
+        # Head: BN2 -> Dropout -> Flatten -> Linear -> BN3
+        self.bn2 = nn.BatchNorm2d(512, eps=1e-05)
+        self.dropout = nn.Dropout(p=dropout, inplace=True) if dropout > 0 else None
+        self.fc = nn.Linear(512 * self.fc_scale, num_features, bias=False)
+        self.features = nn.BatchNorm1d(num_features, eps=1e-05)
+        
+        # Standard InsightFace weight initialization
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+            elif isinstance(m, (nn.BatchNorm2d, nn.BatchNorm1d)):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
 
-        # Stem: Conv3x3 64 -> BN -> PReLU
-        self.stem = nn.Sequential(
-            nn.Conv2d(3, 64, kernel_size=3, stride=1, padding=1, bias=False),
-            nn.BatchNorm2d(64),
-            nn.PReLU(64)
-        )
+        if zero_init_residual:
+            for m in self.modules():
+                if isinstance(m, IBasicBlock):
+                    nn.init.constant_(m.bn3.weight, 0)
 
-        # Stage 1: 64 planes, stride 2 downsampling on 1st block
-        self.layer1 = self._make_layer(64, layers[0], stride=2)
-        # Stage 2: 128 planes, stride 2 downsampling on 1st block
-        self.layer2 = self._make_layer(128, layers[1], stride=2)
-        # Stage 3: 256 planes, stride 2 downsampling on 1st block
-        self.layer3 = self._make_layer(256, layers[2], stride=2)
-        # Stage 4: 512 planes, stride 2 downsampling on 1st block
-        self.layer4 = self._make_layer(512, layers[3], stride=2)
+    def _make_layer(self, block, planes: int, blocks: int, stride: int = 1, dilate: bool = False):
+        downsample = None
+        previous_dilation = self.dilation
+        if dilate:
+            self.dilation *= stride
+            stride = 1
+            
+        if stride != 1 or self.inplanes != planes * block.expansion:
+            downsample = nn.Sequential(
+                nn.Conv2d(self.inplanes, planes * block.expansion, kernel_size=1, stride=stride, bias=False),
+                nn.BatchNorm2d(planes * block.expansion, eps=1e-05),
+            )
 
-        # Feature Output FC Head
-        self.fc_head = nn.Sequential(
-            nn.BatchNorm2d(512),
-            nn.Dropout(0.4),
-            nn.Flatten(),
-            nn.Linear(512 * 7 * 7, embedding_dim, bias=False),
-            nn.BatchNorm1d(embedding_dim)
-        )
-
-    def _make_layer(self, planes: int, blocks: int, stride: int = 1) -> nn.Sequential:
         layers = []
-        layers.append(IResNetBlock(self.in_planes, planes, stride))
-        self.in_planes = planes
+        layers.append(
+            block(self.inplanes, planes, stride, downsample, self.groups, self.base_width, previous_dilation)
+        )
+        self.inplanes = planes * block.expansion
         for _ in range(1, blocks):
-            layers.append(IResNetBlock(self.in_planes, planes, stride=1))
+            layers.append(
+                block(self.inplanes, planes, groups=self.groups, base_width=self.base_width, dilation=self.dilation)
+            )
+
         return nn.Sequential(*layers)
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
@@ -87,14 +137,51 @@ class ResNet100Backbone(nn.Module):
         Args:
             x: (B, 3, 112, 112) normalized input face image [-1, 1]
         Returns:
-            f: (B, 512) L2-normalized identity feature vector
+            f: (B, 512) L2-normalized feature embedding vector
         """
-        out = self.stem(x)
-        out = self.layer1(out)
-        out = self.layer2(out)
-        out = self.layer3(out)
-        out = self.layer4(out)
+        x = self.conv1(x)
+        x = self.bn1(x)
+        x = self.prelu(x)
 
-        embeddings = self.fc_head(out)
-        norm_embeddings = F.normalize(embeddings, p=2, dim=1)
-        return norm_embeddings
+        x = self.layer1(x)
+        x = self.layer2(x)
+        x = self.layer3(x)
+        x = self.layer4(x)
+
+        x = self.bn2(x)
+        if self.dropout is not None:
+            x = self.dropout(x)
+        x = torch.flatten(x, 1)
+        x = self.fc(x)
+        x = self.features(x)
+        
+        # Strict L2 normalization
+        return F.normalize(x, p=2, dim=1)
+
+def iresnet18(dropout=0.4, num_features=512, embedding_dim=None, **kwargs):
+    if embedding_dim is not None:
+        num_features = embedding_dim
+    return IResNet(IBasicBlock, [2, 2, 2, 2], dropout=dropout, num_features=num_features, **kwargs)
+
+def iresnet34(dropout=0.4, num_features=512, embedding_dim=None, **kwargs):
+    if embedding_dim is not None:
+        num_features = embedding_dim
+    return IResNet(IBasicBlock, [3, 4, 6, 3], dropout=dropout, num_features=num_features, **kwargs)
+
+def iresnet50(dropout=0.4, num_features=512, embedding_dim=None, **kwargs):
+    if embedding_dim is not None:
+        num_features = embedding_dim
+    return IResNet(IBasicBlock, [3, 4, 14, 3], dropout=dropout, num_features=num_features, **kwargs)
+
+def iresnet100(dropout=0.4, num_features=512, embedding_dim=None, **kwargs):
+    if embedding_dim is not None:
+        num_features = embedding_dim
+    return IResNet(IBasicBlock, [3, 13, 30, 3], dropout=dropout, num_features=num_features, **kwargs)
+
+def iresnet200(dropout=0.4, num_features=512, embedding_dim=None, **kwargs):
+    if embedding_dim is not None:
+        num_features = embedding_dim
+    return IResNet(IBasicBlock, [6, 26, 60, 6], dropout=dropout, num_features=num_features, **kwargs)
+
+# Alias for backwards compatibility across pipeline
+ResNet100Backbone = iresnet100

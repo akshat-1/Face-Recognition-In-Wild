@@ -4,7 +4,7 @@ import torch
 import torch.nn as nn
 import torch.optim as optim
 from torch.utils.data import DataLoader
-from torch.cuda.amp import autocast, GradScaler
+from torch.amp import autocast, GradScaler
 
 from config import SystemConfig
 from dataset import WildFaceDataset, CelebAAttributeDataset
@@ -37,8 +37,7 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device):
     
     # Models
     backbone = ResNet100Backbone(
-        embedding_dim=cfg.model.embedding_dim,
-        layers=(3, 13, 30, 3)
+        embedding_dim=cfg.model.embedding_dim
     ).to(device)
     
     curricular_loss_fn = CurricularFaceLoss(
