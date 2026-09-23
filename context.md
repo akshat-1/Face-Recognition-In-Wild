@@ -289,11 +289,14 @@ flowchart TD
         OccCheck -- Yes: Yaw > 30 deg / Mask Present --> PIM[PIM Frontalization & D2SC-GAN Super-Res]
         OccCheck -- No: Normal Pose & Unoccluded --> Align[Standard Affine Alignment]
         PIM --> Align
-        Align --> Backbone[ResNet-100 Deep Feature Extractor]
+        Align --> BackboneChoice{Select Backbone Architecture}
+        BackboneChoice -- CNN Option --> IResNet[IResNet-100 CNN Backbone]
+        BackboneChoice -- Transformer Option --> ViTFace[FaceVisionTransformer ViT-Face / TransFace]
     end
 
     subgraph Training & Loss Optimization
-        Backbone --> Embed[512-d Feature Vector f]
+        IResNet --> Embed[512-d Feature Vector f]
+        ViTFace --> Embed
         Embed --> Curricular[CurricularFace Adaptive Margin Loss]
         Embed --> BroadQueue[BroadFace Memory Queue: N_q = 32,768]
         BroadQueue --> Curricular
@@ -318,11 +321,14 @@ flowchart TD
    - Predicts 40 attribute logits. Detects active occluders (`Wearing_Mask`, `Wearing_Sunglasses`, `Wearing_Hat`). Generates a binary spatial weight mask $M_{spatial}$.
 3. **Generative Pose Normalization (PIM Module)**:
    - For faces with yaw $> 30^\circ$, PIM frontalizes the cropped face into a canonical frontal view before embedding extraction.
-4. **Feature Extraction Backbone & BroadCurricular Training (IResNet-100)**:
-   - Production SOTA Improved ResNet-100 (`IResNet-100`, block stages $[3, 13, 30, 3]$) backbone trained using **CurricularFace** adaptive loss coupled with **BroadFace memory queue** ($N_q = 32,768$).
-5. **Real-World Dataset Processing (No Synthetic Occlusions)**:
-   - Direct high-throughput loading of real wild datasets containing genuine unconstrained occlusions (WebFace-OCC, LFW, MS1MV2, CelebA). Synthetic occlusion masking is disabled to preserve natural occlusion boundaries.
-6. **DDRC Sparse Dictionary & Residual Reconstructor (Inference & Unknown Gate)**:
+4. **Dual Feature Extraction Backbone Options (IResNet-100 & ViT-Face)**:
+   - **CNN Option (`IResNet-100`)**: SOTA Improved ResNet-100 (`IResNet-100`, block stages $[3, 13, 30, 3]$) for fast inference and standard benchmark baseline.
+   - **Vision Transformer Option (`FaceVisionTransformer`)**: ViT-Face / TransFace (`vit_face_base` & `vit_face_large` with patch size $P=8$ and $N=196$ tokens) leveraging global Multi-Head Self-Attention ($\text{Softmax}(QK^T / \sqrt{d_k})V$) to dynamically route attention around occluded patch tokens (masks, sunglasses, hands).
+5. **BroadCurricular Loss & Negative Memory Queue**:
+   - Both backbones output a $512$-dimensional L2-normalized embedding vector $f$ trained using **CurricularFace** adaptive margin loss ($\mathcal{L}_{Curricular}$) coupled with **BroadFace memory queue** ($N_q = 32,768$).
+6. **Real-World Dataset Processing (No Synthetic Occlusions)**:
+   - Direct high-throughput loading of real wild datasets containing genuine unconstrained occlusions (WebFace-OCC, LFW, MS1MV2, CelebA).
+7. **DDRC Sparse Dictionary & Residual Reconstructor (Inference & Unknown Gate)**:
    - Class-specific dictionary matrix $D \in \mathbb{R}^{512 \times M}$ stores identity atoms.
    - Solves $\min_{x, e} \| f - D x - e \|_2^2 + \lambda_1 \|x\|_1 + \lambda_2 \|e\|_1$.
    - The sparse residual $e$ absorbs occlusion noise; class residuals $r_k$ decide between enrolled identity or `'unknown'`.
@@ -433,9 +439,12 @@ flowchart TD
         PIM --> BackboneInput
     end
     
-    subgraph Stage 4: SOTA Feature Extraction
-        BackboneInput --> IResNet[IResNet-100 Backbone]
+    subgraph Stage 4: SOTA Feature Extraction Options
+        BackboneInput --> Choice{Backbone Selection}
+        Choice -- CNN Baseline --> IResNet[IResNet-100 Backbone]
+        Choice -- Transformer SOTA --> ViT[FaceVisionTransformer ViT-Face]
         IResNet --> Embed[512-d L2-Normalized Feature Vector f]
+        ViT --> Embed
     end
     
     subgraph Stage 5: DDRC Open-Set Dictionary Classification
@@ -469,8 +478,8 @@ flowchart TD
      - `PIMFrontalizationGAN` encodes profile features into a canonical frontal face view $I_{frontal}$ with bilateral symmetry blending.
 
 4. **SOTA Feature Embedding Extraction (`models/backbone.py`)**:
-   - The canonical aligned crop passes through `ResNet100Backbone` (IResNet-100 with stages `[3, 13, 30, 3]`).
-   - Produces a $512$-dimensional L2-normalized feature vector $f \in \mathbb{R}^{512}$ where $\|f\|_2 = 1.0$.
+   - The canonical aligned crop passes through either `IResNet-100` (block layout `[3, 13, 30, 3]`) or `FaceVisionTransformer` (`vit_face_base` / `vit_face_large` with patch size $P=8$ and $196$ tokens).
+   - Both backbones output a $512$-dimensional L2-normalized feature vector $f \in \mathbb{R}^{512}$ where $\|f\|_2 = 1.0$.
 
 5. **Sparse Dictionary Reconstructor & Unknown Gate (`models/ddrc_solver.py`)**:
    - `DDRCClassifier` projects feature vector $f$ onto class-specific dictionary columns $D = [D_1, D_2, \dots, D_K]$ using the unrolled feedforward `LISTASparseSolver`.
