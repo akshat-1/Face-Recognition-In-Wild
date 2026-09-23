@@ -623,6 +623,40 @@ flowchart TD
    The backbone is fine-tuned using the joint semi-supervised objective:
    $$\mathcal{L}_{\text{total}} = \mathcal{L}_{\text{Curricular}}(\text{labeled}) + \lambda_{\text{semi}} \mathcal{L}_{\text{Curricular}}(\text{pseudo-labeled})$$
 
+### 12.3 Dataset Mapping & Execution Strategy for User's Datasets
+
+```
++---------------------------------------------------------------------------------------+
+| LABELED DATASTREAM (is_labeled = True)                                               |
+| - ROF (Real-world Occluded Faces: sunglasses, neutral, masked)                        |
+| - LFW (Masked & Unmasked Aligned Faces)                                              |
+| - WIDER FACE (Mask Detection & Dense Crowd Bounding Boxes)                           |
+| ==> Used in Phase 1 for Supervised IResNet-100 / ViT-Face CurricularFace Training    |
++---------------------------------------------------------------------------------------+
+
++---------------------------------------------------------------------------------------+
+| UNLABELED DATASTREAM (is_labeled = False)                                             |
+| - FMD Dataset (Food & Masked Face Collections)                                        |
+| - COVID Face Detection Dataset (Millions of Unannotated Masked Faces)                 |
+| - Unannotated Wild Web Face Crawls                                                    |
+| ==> Used in Phase 3 for GCN Sub-Graph Link Prediction & Pseudo-Label Clustering       |
++---------------------------------------------------------------------------------------+
+```
+
+1. **How the Model Explicitly Handles Labeled vs. Unlabeled Batches**:
+   - During `dataset.py` iteration, `WildFaceDataset` returns a 3-tuple `(image_tensor, class_label, True)` for ROF/LFW/WIDER samples.
+   - `UnlabeledFaceDataset` returns `(image_tensor, -1, False)` for FMD/COVID face samples.
+   - The model checks `is_labeled`:
+     - If `is_labeled == True`: Computes supervised `CurricularFaceLoss` against ground-truth class $y_i$.
+     - If `is_labeled == False`: Passes embeddings through `GCNLinkPredictor.generate_pseudo_labels()`.
+
+2. **BFS Sub-Graph Connected Component Clustering**:
+   Given predicted pairwise edge probability matrix $P_{\text{edge}} \in [0, 1]^{B \times B}$:
+   - Constructs binary adjacency $C_{ij} = \mathbb{I}\left(P(e_{ij} = 1) \ge \tau_{\text{cluster}}\right)$.
+   - Runs Breadth-First Search (BFS) to identify connected sub-graph components $\mathcal{C}_1, \mathcal{C}_2, \dots, \mathcal{C}_M$.
+   - Clusters containing $|\mathcal{C}_m| \ge 2$ face nodes are assigned a unique pseudo-class index $\tilde{y}_m \ge K_{\text{labeled}}$.
+   - Singletons ($|\mathcal{C}_m| = 1$) or low-confidence nodes are assigned $\tilde{y} = -1$ and filtered out, eliminating pseudo-label noise.
+
 
 ---
 
