@@ -214,7 +214,11 @@ $$\mathcal{L}_{PIM} = \mathcal{L}_{adv}(G, D) + \lambda_{pixel} \mathcal{L}_{pix
 ---
 
 ## 2.7 Vision Transformer Backbone Architecture (ViT-Face / TransFace)
-* **Authors**: Alexey Dosovitskiy et al. (ICLR 2021 / arXiv:2010.11929), Dan et al. (TransFace, ICCV 2023 / arXiv:2308.14320), Zhong et al. (FaceViT, IEEE T-PAMI 2022), Shi et al. (IEEE T-BIOM 2023)
+* **Authors**:
+  1. **TransFace (ICCV 2023)**: Jun Dan et al., *"TransFace: Calibrating Transformer Training for Face Recognition from a Data-Centric Perspective"*, ICCV 2023 ([`arXiv:2308.10133`](https://arxiv.org/abs/2308.10133), PDF: [`arxiv.org/pdf/2308.10133.pdf`](https://arxiv.org/pdf/2308.10133.pdf), GitHub: [`DanJun6737/TransFace`](https://github.com/DanJun6737/TransFace))
+  2. **ViT Original Base (ICLR 2021)**: Alexey Dosovitskiy et al., *"An Image is Worth 16x16 Words: Transformers for Image Recognition at Scale"*, ICLR 2021 ([`arXiv:2010.11929`](https://arxiv.org/abs/2010.11929), PDF: [`arxiv.org/pdf/2010.11929.pdf`](https://arxiv.org/pdf/2010.11929.pdf), GitHub: [`google-research/vision_transformer`](https://github.com/google-research/vision_transformer))
+  3. **fViT / FaceViT**: A. Nguyen et al., *"Part-based Face Recognition with Vision Transformers"*, 2022 ([`arXiv:2212.00057`](https://arxiv.org/abs/2212.00057), PDF: [`arxiv.org/pdf/2212.00057.pdf`](https://arxiv.org/pdf/2212.00057.pdf))
+  4. **FaceViT (IEEE T-PAMI 2022)**: Y. Zhong, W. Deng et al., *"FaceViT: Disentangled Representation Learning for Face Recognition with Vision Transformers"*, IEEE T-PAMI 2022 (IEEE Xplore ID: `9903525`)
 * **Core Innovation**: Replaces localized sliding convolutional kernels with global Multi-Head Self-Attention (MHSA). Automatically routes features around occluded patch tokens (medical masks, sunglasses, hats, hands) to unoccluded facial tokens across the entire image grid.
 
 ```mermaid
