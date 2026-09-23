@@ -13,7 +13,7 @@ from losses.broadface_queue import BroadFaceMemoryQueue
 from models.ddrc_solver import LISTASparseSolver, DDRCClassifier
 from models.anet_attribute import ANetAttributeParser
 from models.pim_frontalizer import PIMFrontalizationGAN, D2SCGANSuperRes
-from models.backbone import ResNet100Backbone
+from models.backbone import ResNet100Backbone, vit_face_base
 from models.detector import WildFaceDetector, soft_nms_pytorch
 from pipeline.wild_face_pipeline import OccuPoseBroadDictPipeline
 
@@ -21,6 +21,16 @@ class TestOccuPoseBroadDictNet(unittest.TestCase):
 
     def setUp(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def test_vit_face_backbone(self):
+        vit = vit_face_base(embedding_dim=512).to(self.device)
+        x = torch.randn(2, 3, 112, 112, device=self.device)
+        
+        embeddings = vit(x)
+        self.assertEqual(embeddings.shape, (2, 512))
+        norm = torch.norm(embeddings, p=2, dim=1)
+        self.assertTrue(torch.allclose(norm, torch.ones_like(norm), atol=1e-4))
+        print("✓ Vision Transformer (ViT-Face) Backbone Test Passed: Feature Norms = 1.000")
 
     def test_curricular_face_loss(self):
         loss_fn = CurricularFaceLoss(in_features=512, num_classes=50, s=64.0, m=0.5).to(self.device)
