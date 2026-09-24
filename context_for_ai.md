@@ -189,9 +189,17 @@ The codebase in `dataset.py` explicitly handles two distinct data streams using 
 
 ## 8. Command-Line Reference & How to Run
 
-### Python Environment:
-Use the configured virtual environment:
-`/home/akshat/Documents/Wan2.1/.venv/bin/python`
+### AQUA Cluster Execution & PBS Submission (`train_aqua.cmd`)
+- **Host**: `aqua.iitm.ac.in` | **Port**: `40826` | **User**: `na22b025`
+- **SSH Login**: `ssh -p 40826 na22b025@aqua.iitm.ac.in`
+- **Workspace**: `/lfs/usrhome/btech/na22b025/Face_Recognition_In_Wild`
+- **Submit Job to `gpuq` Queue**: `qsub train_aqua.cmd`
+- **Monitor Job Log**: `tail -f train_aqua_live.log`
+
+```bash
+# Submit PBS job on AQUA cluster
+qsub train_aqua.cmd
+```
 
 ### 1. Run Complete Robustness Unit Test Suite (9 Tests)
 ```bash

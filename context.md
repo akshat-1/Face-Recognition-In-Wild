@@ -591,20 +591,46 @@ Where:
 | **Phase 3: GCN Unlabeled Clustering** | 1.0M Unlabeled Images (FMD, COVID Faces) | **50 Minutes** (3 Epochs) | **50 Minutes** (3 Epochs) |
 | **Total End-to-End Cluster Training Time** | ~2.2 Million Images Total | **~2.7 Hours** | **~4.0 Hours** |
 
-### 13.2 Multi-GPU DDP Torchrun Launch Command (`launch_aqua.sh`)
+### 13.2 Multi-GPU DDP PBS Submission Script (`train_aqua.cmd`)
 
 ```bash
-# 4-GPU Distributed Data Parallel (DDP) with AMP Mixed Precision (FP16)
+# Submit PBS job to AQUA gpuq queue
+qsub train_aqua.cmd
+```
+
+```bash
+#!/bin/bash
+#PBS -N OccuPose_Train
+#PBS -q gpuq
+#PBS -l select=2:ncpus=10:ngpus=2
+#PBS -l walltime=48:00:00
+#PBS -j oe
+#PBS -o train_aqua_live.log
+
+cd $PBS_O_WORKDIR
+
 torchrun --nproc_per_node=4 train.py \
-    --data_dir /path/to/AQUA/ROF_WebFace_OCC \
-    --unlabeled_dir /path/to/AQUA/FMD_COVID_Faces \
-    --celeba_dir /path/to/AQUA/CelebA \
+    --data_dir ~/Face_Recognition_In_Wild_Data/name_label \
+    --unlabeled_dir ~/Face_Recognition_In_Wild_Data/unlabeled \
+    --celeba_dir ~/Face_Recognition_In_Wild_Data/celeba \
     --backbone iresnet100 \
-    --batch_size 128 \
+    --batch_size 64 \
     --epochs 25 \
     --lr 0.1 \
     --fp16
 ```
+
+### 13.3 AQUA Cluster Credentials & Quotas
+- **Host**: `aqua.iitm.ac.in` | **Port**: `40826` | **User**: `na22b025`
+- **SSH Login**: `ssh -p 40826 na22b025@aqua.iitm.ac.in`
+- **Home Storage Quota (`/home`)**: 50 GB Permanent Limit (backed up by staff).
+- **Scratch Storage Quota (`/scratch`)**: 500 GB Temporary Limit (auto-deleted after 1-2 weeks).
+- **PBS Commands**:
+  - `qsub train_aqua.cmd`: Submit job
+  - `qstat -u na22b025`: Monitor job status
+  - `tail -f train_aqua_live.log`: Stream training progress
+  - `qdel <job_id>`: Cancel job
+
 
 
 ### 12.1 Explicit Labeled vs. Unlabeled Dataset Differentiation
