@@ -620,6 +620,19 @@ torchrun --nproc_per_node=4 train.py \
     --fp16
 ```
 
+### 13.4 High-Speed Zero-Disk Google Drive to AQUA Scratch Stream Transfer (`transfer_stream_drive_to_aqua.py`)
+To bypass both **limited local laptop disk space** (0 Bytes used) and **cluster network isolation**, `transfer_stream_drive_to_aqua.py` streams Google Drive directly into AQUA `/scratch` via an optimized multi-threaded SSH pipe:
+
+1. **32 Parallel Concurrent Stream Workers (`--transfers 32 --checkers 64`)**: Bypasses single-thread TCP bottlenecks and maximizes local network bandwidth.
+2. **Hardware-Accelerated SSH AES128-GCM Cipher (`-c aes128-gcm@openssh.com`)**: Reduces CPU encryption overhead during streaming.
+3. **SSH ControlMaster Multiplexing (`ControlPersist=2h`)**: Reuses authenticated SSH sockets to eliminate TLS handshake overhead.
+4. **128MB RAM Stream Buffer**: Kept strictly in local memory (0 Bytes on laptop disk).
+
+```bash
+# Run locally on your laptop (0 Bytes local disk space used, 32 parallel streams):
+python3 transfer_stream_drive_to_aqua.py --transfers 32
+```
+
 ### 13.5 Official HPCE IITM SCP File Transfer Commands
 Per official HPCE IITM documentation ([`hpce.iitm.ac.in`](https://hpce.iitm.ac.in/content1.php?navigate=gettingstarted)):
 
