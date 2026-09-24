@@ -25,9 +25,9 @@ source ~/.venv/bin/activate || source activate torch_env || true
 
 # Launch PyTorch Distributed Data Parallel (DDP) across 4 GPUs
 torchrun --nproc_per_node=4 train.py \
-    --data_dir ~/Face_Recognition_In_Wild_Data/name_label \
-    --unlabeled_dir ~/Face_Recognition_In_Wild_Data/unlabeled \
-    --celeba_dir ~/Face_Recognition_In_Wild_Data/celeba \
+    --data_dir ~/scratch/Face_Dataset/name_label \
+    --unlabeled_dir ~/scratch/Face_Dataset/unlabeled \
+    --celeba_dir ~/scratch/Face_Dataset/celeba \
     --backbone iresnet100 \
     --batch_size 64 \
     --epochs 25 \

@@ -11,7 +11,7 @@ DRIVE_FOLDER_LINK = "https://drive.google.com/drive/folders/1bzwadTmTkp69kNkbdPN
 AQUA_HOST = "aqua.iitm.ac.in"
 AQUA_PORT = "40826"
 AQUA_USER = "na22b025"
-AQUA_DEST_DEFAULT = "Face_Dataset" # Relative to ~/ (/lfs/usrhome/btech/na22b025/Face_Dataset)
+AQUA_SCRATCH_DEST = "scratch/Face_Dataset" # ~/scratch/Face_Dataset (/lfs/usrhome/btech/na22b025/scratch/Face_Dataset)
 SOCKET_DIR = os.path.expanduser("~/.ssh/sockets")
 
 def log(msg, level="INFO"):
@@ -57,24 +57,24 @@ def run_command_with_live_logs(cmd, label="EXEC"):
         log(f"Subprocess [{label}] failed after {elapsed:.2f} seconds with Exit Code {return_code}.", level="ERROR")
         raise subprocess.CalledProcessError(return_code, cmd)
 
-def stream_high_speed_rclone(dest_folder, num_transfers=32, num_checkers=64):
+def stream_high_speed_rclone(scratch_dest, num_transfers=32, num_checkers=64):
     """
     High-Speed Multi-Threaded rclone Stream Engine (0 Bytes Local Disk Space).
     Opens 32 parallel TCP connections to Google Drive and streams 32 concurrent SFTP/SSH data streams
-    directly into AQUA ~/Face_Dataset (on /lfs filesystem with 235TB free space).
+    directly into AQUA ~/scratch/Face_Dataset (on /lfs filesystem with 235TB free space).
     """
     log("Initializing Method 1: High-Speed Multi-Threaded rclone SFTP Stream Engine")
-    log(f"Target AQUA Destination: {AQUA_USER}@{AQUA_HOST}:~/{dest_folder}")
+    log(f"Target AQUA Scratch Destination: {AQUA_USER}@{AQUA_HOST}:~/{scratch_dest}")
     log(f"Parallel Worker Threads: Transfers={num_transfers}, Checkers={num_checkers}, RAM Buffer=128MB")
     
-    # 1. Create target directory on AQUA Home (~/Face_Dataset)
-    mkdir_cmd = f"ssh -o ControlMaster=auto -o ControlPath={SOCKET_DIR}/aqua_%r@%h_%p -o ControlPersist=2h -p {AQUA_PORT} {AQUA_USER}@{AQUA_HOST} 'mkdir -p ~/{dest_folder}'"
+    # 1. Create target directory on AQUA Scratch (~/scratch/Face_Dataset)
+    mkdir_cmd = f"ssh -o ControlMaster=auto -o ControlPath={SOCKET_DIR}/aqua_%r@%h_%p -o ControlPersist=2h -p {AQUA_PORT} {AQUA_USER}@{AQUA_HOST} 'mkdir -p ~/{scratch_dest}'"
     run_command_with_live_logs(mkdir_cmd, label="AQUA-MKDIR")
     
-    # 2. Optimized rclone stream over high-speed SFTP to user home directory (~/Face_Dataset)
+    # 2. Optimized rclone stream over high-speed SFTP to user scratch directory (~/scratch/Face_Dataset)
     cmd = [
         "rclone", "copy",
-        "drive:", f"{dest_folder}",
+        "drive:", f"{scratch_dest}",
         "--drive-root-folder-id", DRIVE_FOLDER_ID,
         "--transfers", str(num_transfers),
         "--checkers", str(num_checkers),
@@ -91,15 +91,15 @@ def stream_high_speed_rclone(dest_folder, num_transfers=32, num_checkers=64):
     
     run_command_with_live_logs(cmd, label="RCLONE-SFTP-STREAM")
 
-def stream_high_speed_gdown_pipe(dest_folder):
+def stream_high_speed_gdown_pipe(scratch_dest):
     """
     High-Speed gdown Stream Engine with Hardware-Accelerated SSH AES128-GCM Cipher Pipe.
     """
     log("Initializing Method 2: gdown Stream Engine via Hardware-Accelerated SSH AES128-GCM Pipe")
-    log(f"Target AQUA Destination: {AQUA_USER}@{AQUA_HOST}:~/{dest_folder}")
+    log(f"Target AQUA Scratch Destination: {AQUA_USER}@{AQUA_HOST}:~/{scratch_dest}")
     
     # Ensure remote directory exists on AQUA
-    mkdir_cmd = f"ssh -p {AQUA_PORT} {AQUA_USER}@{AQUA_HOST} 'mkdir -p ~/{dest_folder}'"
+    mkdir_cmd = f"ssh -p {AQUA_PORT} {AQUA_USER}@{AQUA_HOST} 'mkdir -p ~/{scratch_dest}'"
     run_command_with_live_logs(mkdir_cmd, label="AQUA-MKDIR")
     
     # Install gdown if needed
@@ -116,26 +116,26 @@ def stream_high_speed_gdown_pipe(dest_folder):
         f"ssh -c aes128-gcm@openssh.com,chacha20-poly1305@openssh.com "
         f"-o ControlMaster=auto -o ControlPath={SOCKET_DIR}/aqua_%r@%h_%p -o ControlPersist=2h "
         f"-p {AQUA_PORT} {AQUA_USER}@{AQUA_HOST} "
-        f"'tar -C ~/{dest_folder} -xzf - 2>/dev/null || cat > ~/{dest_folder}/streamed_dataset.tar'"
+        f"'tar -C ~/{scratch_dest} -xzf - 2>/dev/null || cat > ~/{scratch_dest}/streamed_dataset.tar'"
     )
     
     pipe_cmd = f"{gdown_cmd} | {ssh_cmd}"
     run_command_with_live_logs(pipe_cmd, label="GDOWN-SSH-PIPE")
 
-def verify_remote_destination(dest_folder):
+def verify_remote_destination(scratch_dest):
     """
-    Verifies transferred files on AQUA cluster directory after upload.
+    Verifies transferred files on AQUA cluster scratch space after upload.
     """
-    log("Verifying transferred files on AQUA cluster...")
-    verify_cmd = f"ssh -p {AQUA_PORT} {AQUA_USER}@{AQUA_HOST} 'ls -la ~/{dest_folder} | head -n 20'"
+    log("Verifying transferred files on AQUA cluster scratch space...")
+    verify_cmd = f"ssh -p {AQUA_PORT} {AQUA_USER}@{AQUA_HOST} 'ls -la ~/{scratch_dest} | head -n 20'"
     try:
         run_command_with_live_logs(verify_cmd, label="AQUA-VERIFY")
     except Exception as e:
         log(f"Verification check failed: {e}", level="WARNING")
 
 def main():
-    parser = argparse.ArgumentParser(description="High-Speed Zero-Disk Streaming Transfer: Google Drive -> AQUA Cluster over SSH Pipe")
-    parser.add_argument("--dest_folder", type=str, default=AQUA_DEST_DEFAULT, help="Remote folder name on AQUA cluster (relative to ~/)")
+    parser = argparse.ArgumentParser(description="High-Speed Zero-Disk Streaming Transfer: Google Drive -> AQUA Cluster ~/scratch/Face_Dataset over SSH Pipe")
+    parser.add_argument("--scratch_dest", type=str, default=AQUA_SCRATCH_DEST, help="Remote scratch path on AQUA cluster (relative to ~/ or absolute)")
     parser.add_argument("--transfers", type=int, default=32, help="Number of parallel concurrent file transfer workers")
     parser.add_argument("--checkers", type=int, default=64, help="Number of parallel checker threads")
     args = parser.parse_args()
@@ -146,17 +146,17 @@ def main():
     log(f"Local Laptop Memory Buffer: 128MB RAM (0 Bytes Local Disk Space Required)")
     log(f"Google Drive Folder ID: {DRIVE_FOLDER_ID}")
     log(f"Google Drive Link: {DRIVE_FOLDER_LINK}")
-    log(f"Target AQUA Destination: {AQUA_USER}@{AQUA_HOST}:~/{args.dest_folder}")
+    log(f"Target AQUA Scratch Destination: {AQUA_USER}@{AQUA_HOST}:~/{args.scratch_dest}")
     log("==========================================================================")
 
     setup_ssh_multiplexing()
-    dest_folder = args.dest_folder
+    scratch_dest = args.scratch_dest
 
     # Try Method 1: rclone 32-parallel SFTP stream (Fastest)
     if check_command("rclone"):
         try:
-            stream_high_speed_rclone(dest_folder, num_transfers=args.transfers, num_checkers=args.checkers)
-            verify_remote_destination(dest_folder)
+            stream_high_speed_rclone(scratch_dest, num_transfers=args.transfers, num_checkers=args.checkers)
+            verify_remote_destination(scratch_dest)
             total_elapsed = time.time() - start_total_time
             log("==========================================================================")
             log(f"✓ ZERO-DISK STREAMING TRANSFER COMPLETED IN {total_elapsed / 60.0:.2f} MINUTES")
@@ -167,8 +167,8 @@ def main():
 
     # Method 2: gdown hardware-accelerated SSH pipe
     try:
-        stream_high_speed_gdown_pipe(dest_folder)
-        verify_remote_destination(dest_folder)
+        stream_high_speed_gdown_pipe(scratch_dest)
+        verify_remote_destination(scratch_dest)
         total_elapsed = time.time() - start_total_time
         log("==========================================================================")
         log(f"✓ ZERO-DISK GDOWN STREAMING TRANSFER COMPLETED IN {total_elapsed / 60.0:.2f} MINUTES")
@@ -176,7 +176,7 @@ def main():
     except Exception as e:
         log(f"Streaming transfer failed: {e}", level="ERROR")
         log("Alternative Manual Rclone Command:", level="INFO")
-        log(f"rclone copy drive: {dest_folder} --drive-root-folder-id {DRIVE_FOLDER_ID} --transfers 32 -P", level="INFO")
+        log(f"rclone copy drive: {scratch_dest} --drive-root-folder-id {DRIVE_FOLDER_ID} --transfers 32 -P", level="INFO")
         sys.exit(1)
 
 if __name__ == "__main__":
