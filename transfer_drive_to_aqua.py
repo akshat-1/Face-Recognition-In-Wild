@@ -3,7 +3,7 @@ import sys
 import subprocess
 import argparse
 
-# Configuration
+# Configuration matching HPCE IITM Documentation
 DRIVE_FOLDER_LINK = "https://drive.google.com/drive/folders/1bzwadTmTkp69kNkbdPNb-2tm7DKAvd7Q?usp=sharing"
 AQUA_HOST = "aqua.iitm.ac.in"
 AQUA_PORT = "40826"
@@ -36,27 +36,39 @@ def step1_download_google_drive(local_dir):
     cmd = f"{sys.executable} -m gdown --folder '{DRIVE_FOLDER_LINK}' -O '{local_dir}' --remaining-ok"
     run_cmd(cmd)
 
-def step2_upload_to_aqua_scratch(local_dir, scratch_dest):
+def step2_upload_to_aqua_scratch(local_dir, scratch_dest, method="scp"):
     """
-    Step 2: Upload local dataset folder to AQUA cluster /scratch directory via SSH rsync.
+    Step 2: Upload local dataset folder to AQUA cluster /scratch directory via official HPCE scp or rsync.
+    Per HPCE IITM documentation (https://hpce.iitm.ac.in/content1.php?navigate=gettingstarted):
+    scp -P 40826 -r folder username@aqua.iitm.ac.in:/scratch/username/
     """
     print(f"\n========================================================")
     print(f"Step 2: Uploading Local Dataset to AQUA Cluster /scratch")
-    print(f"Destination: {AQUA_USER}@{AQUA_HOST}:{scratch_dest}")
+    print(f"Method: {method.upper()} | Destination: {AQUA_USER}@{AQUA_HOST}:{scratch_dest}")
     print(f"========================================================\n")
     
     # Create remote scratch directory over SSH
     mkdir_cmd = f"ssh -p {AQUA_PORT} {AQUA_USER}@{AQUA_HOST} 'mkdir -p {scratch_dest}'"
     run_cmd(mkdir_cmd)
     
-    # High-speed rsync upload over SSH port 40826 with resume capability
-    rsync_cmd = (
-        f"rsync -avzP --partial "
-        f"-e 'ssh -p {AQUA_PORT}' "
-        f"'{local_dir}/' "
-        f"{AQUA_USER}@{AQUA_HOST}:'{scratch_dest}/'"
-    )
-    run_cmd(rsync_cmd)
+    if method.lower() == "scp":
+        # Official HPCE IITM scp command
+        scp_cmd = f"scp -P {AQUA_PORT} -r '{local_dir}/'* {AQUA_USER}@{AQUA_HOST}:'{scratch_dest}/'"
+        try:
+            run_cmd(scp_cmd)
+        except Exception as e:
+            print(f"[SCP Warning] scp command failed: {e}. Retrying with rsync...")
+            method = "rsync"
+
+    if method.lower() == "rsync":
+        # High-speed rsync upload over SSH port 40826 with resume capability
+        rsync_cmd = (
+            f"rsync -avzP --partial "
+            f"-e 'ssh -p {AQUA_PORT}' "
+            f"'{local_dir}/' "
+            f"{AQUA_USER}@{AQUA_HOST}:'{scratch_dest}/'"
+        )
+        run_cmd(rsync_cmd)
     
     print(f"\n========================================================")
     print(f"✓ Upload Complete! Dataset successfully transferred to:")
@@ -67,13 +79,14 @@ def main():
     parser = argparse.ArgumentParser(description="Local Script to Download Google Drive Face_Dataset and Upload to AQUA Cluster /scratch Space")
     parser.add_argument("--local_dir", type=str, default=LOCAL_TEMP_DIR, help="Local temporary directory for Google Drive download")
     parser.add_argument("--scratch_dest", type=str, default=AQUA_SCRATCH_DEST, help="Remote /scratch path on AQUA cluster")
+    parser.add_argument("--method", type=str, choices=["scp", "rsync"], default="scp", help="File upload method (scp = HPCE IITM official, rsync = multi-threaded)")
     parser.add_argument("--skip_download", action="store_true", help="Skip Google Drive download and proceed straight to upload")
     args = parser.parse_args()
     
     if not args.skip_download:
         step1_download_google_drive(args.local_dir)
         
-    step2_upload_to_aqua_scratch(args.local_dir, args.scratch_dest)
+    step2_upload_to_aqua_scratch(args.local_dir, args.scratch_dest, method=args.method)
 
 if __name__ == "__main__":
     main()
