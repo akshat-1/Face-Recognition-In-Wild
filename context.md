@@ -620,18 +620,17 @@ torchrun --nproc_per_node=4 train.py \
     --fp16
 ```
 
-### 13.4 Google Drive Dataset Transfer Script (`download_drive_to_aqua_scratch.py`)
+### 13.4 Google Drive Dataset Transfer Script (`download_drive_aqua.cmd`)
 - **Drive Folder**: `Face_Dataset` (ID: `1bzwadTmTkp69kNkbdPNb-2tm7DKAvd7Q`)
 - **Drive Link**: [`https://drive.google.com/drive/folders/1bzwadTmTkp69kNkbdPNb-2tm7DKAvd7Q?usp=sharing`](https://drive.google.com/drive/folders/1bzwadTmTkp69kNkbdPNb-2tm7DKAvd7Q?usp=sharing)
 - **Target AQUA Location**: `/scratch/na22b025/Face_Dataset`
+- **Strict Cluster Policy**: All computations and downloads MUST be submitted via PBS `qsub` jobs. Direct interactive python execution on login node `hn1` is strictly prohibited and terminated by system staff.
 
 ```bash
-# Submit background download job on AQUA cluster
+# Submit background download job on AQUA cluster compute node:
 qsub download_drive_aqua.cmd
-
-# Or run directly on AQUA interactive compute node:
-python3 download_drive_to_aqua_scratch.py --dest /scratch/na22b025/Face_Dataset
 ```
+
 
 
 
