@@ -620,16 +620,19 @@ torchrun --nproc_per_node=4 train.py \
     --fp16
 ```
 
-### 13.3 AQUA Cluster Credentials & Quotas
-- **Host**: `aqua.iitm.ac.in` | **Port**: `40826` | **User**: `na22b025`
-- **SSH Login**: `ssh -p 40826 na22b025@aqua.iitm.ac.in`
-- **Home Storage Quota (`/home`)**: 50 GB Permanent Limit (backed up by staff).
-- **Scratch Storage Quota (`/scratch`)**: 500 GB Temporary Limit (auto-deleted after 1-2 weeks).
-- **PBS Commands**:
-  - `qsub train_aqua.cmd`: Submit job
-  - `qstat -u na22b025`: Monitor job status
-  - `tail -f train_aqua_live.log`: Stream training progress
-  - `qdel <job_id>`: Cancel job
+### 13.4 Google Drive Dataset Transfer Script (`download_drive_to_aqua_scratch.py`)
+- **Drive Folder**: `Face_Dataset` (ID: `1bzwadTmTkp69kNkbdPNb-2tm7DKAvd7Q`)
+- **Drive Link**: [`https://drive.google.com/drive/folders/1bzwadTmTkp69kNkbdPNb-2tm7DKAvd7Q?usp=sharing`](https://drive.google.com/drive/folders/1bzwadTmTkp69kNkbdPNb-2tm7DKAvd7Q?usp=sharing)
+- **Target AQUA Location**: `/scratch/na22b025/Face_Dataset`
+
+```bash
+# Submit background download job on AQUA cluster
+qsub download_drive_aqua.cmd
+
+# Or run directly on AQUA interactive compute node:
+python3 download_drive_to_aqua_scratch.py --dest /scratch/na22b025/Face_Dataset
+```
+
 
 
 
