@@ -620,16 +620,20 @@ torchrun --nproc_per_node=4 train.py \
     --fp16
 ```
 
-### 13.4 Google Drive Dataset Transfer Script (`download_drive_aqua.cmd`)
-- **Drive Folder**: `Face_Dataset` (ID: `1bzwadTmTkp69kNkbdPNb-2tm7DKAvd7Q`)
-- **Drive Link**: [`https://drive.google.com/drive/folders/1bzwadTmTkp69kNkbdPNb-2tm7DKAvd7Q?usp=sharing`](https://drive.google.com/drive/folders/1bzwadTmTkp69kNkbdPNb-2tm7DKAvd7Q?usp=sharing)
-- **Target AQUA Location**: `/scratch/na22b025/Face_Dataset`
-- **Strict Cluster Policy**: All computations and downloads MUST be submitted via PBS `qsub` jobs. Direct interactive python execution on login node `hn1` is strictly prohibited and terminated by system staff.
+### 13.4 Google Drive to AQUA Scratch Local Transfer Script (`transfer_drive_to_aqua.py`)
+Since AQUA cluster nodes do not have outbound internet access to Google Drive, use **`transfer_drive_to_aqua.py`** on your local workstation/laptop:
+
+1. Downloads `Face_Dataset` from Google Drive locally (`gdown --folder`).
+2. Uploads dataset straight to AQUA `/scratch` space via high-speed `rsync -P` over SSH port 40826 (`na22b025@aqua.iitm.ac.in`).
 
 ```bash
-# Submit background download job on AQUA cluster compute node:
-qsub download_drive_aqua.cmd
+# Run locally on your laptop/workstation:
+python3 transfer_drive_to_aqua.py
+
+# If already downloaded locally, skip download and push directly:
+python3 transfer_drive_to_aqua.py --skip_download
 ```
+
 
 
 
