@@ -620,19 +620,17 @@ torchrun --nproc_per_node=4 train.py \
     --fp16
 ```
 
-### 13.4 Google Drive to AQUA Scratch Local Transfer Script (`transfer_drive_to_aqua.py`)
-Since AQUA cluster nodes do not have outbound internet access to Google Drive, use **`transfer_drive_to_aqua.py`** on your local workstation/laptop:
+### 13.4 Zero-Disk Google Drive to AQUA Scratch Stream Transfer (`transfer_stream_drive_to_aqua.py`)
+When local laptop disk space is insufficient to hold the large dataset, **`transfer_stream_drive_to_aqua.py`** uses your laptop as a **zero-disk network pipe**:
 
-1. Downloads `Face_Dataset` from Google Drive locally (`gdown --folder`).
-2. Uploads dataset straight to AQUA `/scratch` space via high-speed `rsync -P` over SSH port 40826 (`na22b025@aqua.iitm.ac.in`).
+1. Chunks Google Drive stream directly into memory (0 Bytes local laptop disk space used).
+2. Pipes data stream over SSH (`ssh -p 40826 na22b025@aqua.iitm.ac.in`) straight into `/scratch/na22b025/Face_Dataset/`.
 
 ```bash
-# Run locally on your laptop/workstation:
-python3 transfer_drive_to_aqua.py
-
-# If already downloaded locally, skip download and push directly:
-python3 transfer_drive_to_aqua.py --skip_download
+# Run locally on your laptop (0 Bytes local disk space used):
+python3 transfer_stream_drive_to_aqua.py
 ```
+
 
 
 
