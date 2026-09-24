@@ -688,12 +688,50 @@ flowchart TD
      - If `is_labeled == True`: Computes supervised `CurricularFaceLoss` against ground-truth class $y_i$.
      - If `is_labeled == False`: Passes embeddings through `GCNLinkPredictor.generate_pseudo_labels()`.
 
-2. **BFS Sub-Graph Connected Component Clustering**:
-   Given predicted pairwise edge probability matrix $P_{\text{edge}} \in [0, 1]^{B \times B}$:
-   - Constructs binary adjacency $C_{ij} = \mathbb{I}\left(P(e_{ij} = 1) \ge \tau_{\text{cluster}}\right)$.
-   - Runs Breadth-First Search (BFS) to identify connected sub-graph components $\mathcal{C}_1, \mathcal{C}_2, \dots, \mathcal{C}_M$.
-   - Clusters containing $|\mathcal{C}_m| \ge 2$ face nodes are assigned a unique pseudo-class index $\tilde{y}_m \ge K_{\text{labeled}}$.
-   - Singletons ($|\mathcal{C}_m| = 1$) or low-confidence nodes are assigned $\tilde{y} = -1$ and filtered out, eliminating pseudo-label noise.
+### 12.4 Robust Universal Dataset Loader & Heterogeneous File Discovery (`dataset.py`)
+
+To handle datasets collected from diverse sources with non-standard, heterogeneous file structures (ROF, LFW, WIDER, FMD, COVID faces), `RobustUniversalFaceDataset` implements an automatic **5-step discovery cascade**:
+
+```
+                                [Input dataset_dir]
+                                         │
+                                         ▼
+            +---------------------------------------------------------+
+            | Step 1: Metadata File Parser (CSV / JSON / TXT / TSV)   |
+            | Finds labels.csv, annotations.json, metadata.txt etc.   |
+            +---------------------------------------------------------+
+                                         │ (If no metadata file)
+                                         ▼
+            +---------------------------------------------------------+
+            | Step 2: Deep Recursive Subfolder Hierarchy Parser       |
+            | Discovers root/**/identity_name/image.jpg at any depth  |
+            +---------------------------------------------------------+
+                                         │ (If flat folder)
+                                         ▼
+            +---------------------------------------------------------+
+            | Step 3: Filename Regex Pattern Parser                   |
+            | Parses Elon_Musk_0001.jpg -> identity "Elon_Musk"      |
+            +---------------------------------------------------------+
+                                         │
+                                         ▼
+            +---------------------------------------------------------+
+            | Step 4: YOLO Bounding Box Parser                        |
+            | Reads matching img1.txt for bbox [xc, yc, w, h] crops   |
+            +---------------------------------------------------------+
+                                         │
+                                         ▼
+            +---------------------------------------------------------+
+            | Step 5: Corrupted File Safeguard                        |
+            | Catches PIL error; returns dummy tensor without crash   |
+            +---------------------------------------------------------+
+```
+
+1. **Metadata Parsing**: Automatically inspects CSV, JSON, TXT, or TSV files for image paths and identity/attribute columns.
+2. **Recursive Subfolders**: Recursively traverses subdirectories at any depth, mapping folder names to integer class indices.
+3. **Regex Pattern Parsing**: Extracts identity targets from flat filenames (e.g. `PersonName_0001.jpg` $\to$ `"PersonName"`).
+4. **YOLO Bounding Box Crop**: Automatically reads matching `.txt` files (`x_center y_center width height`) and crops face regions before passing tensors to the backbone.
+5. **Corrupted File Safeguard**: Handles corrupted image bytes gracefully without halting multi-GPU training jobs.
+
 
 
 ---

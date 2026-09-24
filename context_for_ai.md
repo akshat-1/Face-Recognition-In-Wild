@@ -146,6 +146,15 @@ The codebase in `dataset.py` explicitly handles two distinct data streams using 
 +---------------------------------------------------------------------------------------+
 ```
 
+### 5.1 Universal Dataset Discovery Cascade (`dataset.py`)
+
+`RobustUniversalFaceDataset` handles arbitrary, non-standard file structures automatically:
+1. **Metadata Parsing**: Checks for `labels.csv`, `annotations.json`, `metadata.txt`, or `labels.tsv`.
+2. **Recursive Subfolders**: Traverses `root/**/subject_name/image.jpg` at any folder depth.
+3. **Filename Pattern Parsing**: Uses regex `^(.*?)(?:_\d+)?\.(?:jpg|png)$` for flat directories.
+4. **YOLO BBox Parsing**: Automatically crops face bounding boxes if `img1.txt` exists (`class xc yc w h`).
+5. **Corrupted File Safeguard**: Catches broken byte read errors gracefully without halting DDP training.
+
 ---
 
 ## 6. How Occlusion is Tackled (4-Layered Strategy)
