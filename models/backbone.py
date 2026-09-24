@@ -5,7 +5,7 @@ import torch.nn.functional as F
 
 __all__ = [
     'IResNet', 'IBasicBlock', 'iresnet18', 'iresnet34', 'iresnet50', 'iresnet100', 'iresnet200',
-    'FaceVisionTransformer', 'vit_face_base', 'vit_face_large', 'ResNet100Backbone'
+    'FaceVisionTransformer', 'vit_face_base', 'vit_face_large', 'vit_face_huge', 'ResNet100Backbone'
 ]
 
 # =====================================================================
@@ -285,6 +285,11 @@ def vit_face_large(dropout=0.1, num_features=512, embedding_dim=None, **kwargs):
     if embedding_dim is not None:
         num_features = embedding_dim
     return FaceVisionTransformer(img_size=112, patch_size=8, embed_dim=768, depth=24, num_heads=12, num_features=num_features, dropout=dropout, **kwargs)
+
+def vit_face_huge(dropout=0.1, num_features=512, embedding_dim=None, **kwargs):
+    if embedding_dim is not None:
+        num_features = embedding_dim
+    return FaceVisionTransformer(img_size=112, patch_size=8, embed_dim=1024, depth=32, num_heads=16, num_features=num_features, dropout=dropout, **kwargs)
 
 # Default Alias
 ResNet100Backbone = iresnet100
