@@ -19,10 +19,26 @@ from pipeline.wild_face_pipeline import OccuPoseBroadDictPipeline
 
 from models.gcn_cluster import GCNLinkPredictor
 
+from dataset import RobustUniversalFaceDataset, WildFaceDataset, UnlabeledFaceDataset
+
 class TestOccuPoseBroadDictNet(unittest.TestCase):
 
     def setUp(self):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    def test_universal_dataset(self):
+        # 1. Test fallback synthetic mode
+        ds_synthetic = RobustUniversalFaceDataset(root_dir=None, is_labeled=True)
+        img, label, is_labeled = ds_synthetic[0]
+        self.assertEqual(img.shape, (3, 112, 112))
+        self.assertTrue(is_labeled)
+        
+        # 2. Test unlabeled mode
+        ds_unlabeled = RobustUniversalFaceDataset(root_dir=None, is_labeled=False)
+        img_un, label_un, is_labeled_un = ds_unlabeled[0]
+        self.assertEqual(label_un, -1)
+        self.assertFalse(is_labeled_un)
+        print("✓ Universal Dataset Loader Test Passed (Labeled, Unlabeled & Fallback Modes)")
 
     def test_gcn_clustering(self):
         gcn = GCNLinkPredictor(feature_dim=512, hidden_dim=256, k_neighbors=3).to(self.device)
