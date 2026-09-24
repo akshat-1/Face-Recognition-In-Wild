@@ -620,16 +620,24 @@ torchrun --nproc_per_node=4 train.py \
     --fp16
 ```
 
-### 13.4 Zero-Disk Google Drive to AQUA Scratch Stream Transfer (`transfer_stream_drive_to_aqua.py`)
-When local laptop disk space is insufficient to hold the large dataset, **`transfer_stream_drive_to_aqua.py`** uses your laptop as a **zero-disk network pipe**:
-
-1. Chunks Google Drive stream directly into memory (0 Bytes local laptop disk space used).
-2. Pipes data stream over SSH (`ssh -p 40826 na22b025@aqua.iitm.ac.in`) straight into `/scratch/na22b025/Face_Dataset/`.
+### 13.5 Official HPCE IITM SCP File Transfer Commands
+Per official HPCE IITM documentation ([`hpce.iitm.ac.in`](https://hpce.iitm.ac.in/content1.php?navigate=gettingstarted)):
 
 ```bash
-# Run locally on your laptop (0 Bytes local disk space used):
-python3 transfer_stream_drive_to_aqua.py
+# 1. Upload file to AQUA Home Directory
+scp -P 40826 filename na22b025@aqua.iitm.ac.in:~/
+
+# 2. Upload folder to AQUA Home Directory
+scp -P 40826 -r folder_name na22b025@aqua.iitm.ac.in:~/
+
+# 3. Upload dataset folder directly to AQUA /scratch Directory
+scp -P 40826 -r dataset_folder na22b025@aqua.iitm.ac.in:/scratch/na22b025/
+
+# 4. Download file/folder from AQUA to local laptop
+scp -P 40826 na22b025@aqua.iitm.ac.in:~/Marine_Diffusion_Planner/output.log ./
+scp -P 40826 -r na22b025@aqua.iitm.ac.in:~/checkpoint_folder ./
 ```
+
 
 
 
