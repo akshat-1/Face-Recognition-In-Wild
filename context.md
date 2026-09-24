@@ -726,11 +726,32 @@ To handle datasets collected from diverse sources with non-standard, heterogeneo
             +---------------------------------------------------------+
 ```
 
-1. **Metadata Parsing**: Automatically inspects CSV, JSON, TXT, or TSV files for image paths and identity/attribute columns.
-2. **Recursive Subfolders**: Recursively traverses subdirectories at any depth, mapping folder names to integer class indices.
-3. **Regex Pattern Parsing**: Extracts identity targets from flat filenames (e.g. `PersonName_0001.jpg` $\to$ `"PersonName"`).
-4. **YOLO Bounding Box Crop**: Automatically reads matching `.txt` files (`x_center y_center width height`) and crops face regions before passing tensors to the backbone.
-5. **Corrupted File Safeguard**: Handles corrupted image bytes gracefully without halting multi-GPU training jobs.
+### 12.5 Custom Multi-Directory Dataset Layout (`dataset.py`)
+
+The production loader in `dataset.py` is tailored for your dataset hierarchy:
+
+```
+Dataset Root Directory:
+├── unlabeled/                            # Unlabeled face collections (FMD, COVID faces, web crawls)
+│   └── (Subfolders at arbitrary depths)  # Parsed by UnlabeledWildDataset -> (img, -1, False)
+│
+├── name_label/                           # Labeled identity face datasets
+│   ├── ROF/                              # Subfolder names = Identity Names (e.g. ROF/Person_A/img1.jpg)
+│   ├── face_with_mask/                   # Filename Regex Pattern parsing at all depths (Elon_Musk_0001.jpg -> "Elon_Musk")
+│   └── face_detection_in_wild_dataset/   # Subfolder names = Identity Names (e.g. Subject_B/img2.jpg)
+│                                         # Parsed by NameLabeledFaceDataset -> (img, label_idx, True)
+│
+└── bb_label/                             # Bounding Box Face Detection Datasets
+    ├── facemaskyolo/data/                # Images in data/images/, labels in data/labels/ (YOLO .txt)
+    └── darknet/                          # Images and label .txt files in the SAME folder
+                                          # Parsed by BoundingBoxFaceDataset -> (cropped_face_tensor, 0, True)
+```
+
+1. **`UnlabeledWildDataset`**: Recursively traverses `unlabeled/` across all subfolders. Used in **Phase 3 Semi-Supervised GCN Clustering**.
+2. **`NameLabeledFaceDataset`**: Parses `ROF/` and `face_detection_in_wild_dataset/` via folder identity mapping, and `face_with_mask/` via filename regex extraction. Used in **Phase 1 Backbone & CurricularFace Training**.
+3. **`BoundingBoxFaceDataset`**: Parses `facemaskyolo/` (separate `images/` & `labels/` subfolders) and `darknet/` (same folder image & label `.txt` files). Automatically crops bounding box face patches.
+4. **`UnifiedWildFaceDataset`**: High-throughput unified dataset class combining all three datastreams seamlessly.
+
 
 
 

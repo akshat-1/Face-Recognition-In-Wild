@@ -146,14 +146,18 @@ The codebase in `dataset.py` explicitly handles two distinct data streams using 
 +---------------------------------------------------------------------------------------+
 ```
 
-### 5.1 Universal Dataset Discovery Cascade (`dataset.py`)
+### 5.2 Custom Dataset Folder Architecture (`unlabeled/`, `name_label/`, `bb_label/`)
 
-`RobustUniversalFaceDataset` handles arbitrary, non-standard file structures automatically:
-1. **Metadata Parsing**: Checks for `labels.csv`, `annotations.json`, `metadata.txt`, or `labels.tsv`.
-2. **Recursive Subfolders**: Traverses `root/**/subject_name/image.jpg` at any folder depth.
-3. **Filename Pattern Parsing**: Uses regex `^(.*?)(?:_\d+)?\.(?:jpg|png)$` for flat directories.
-4. **YOLO BBox Parsing**: Automatically crops face bounding boxes if `img1.txt` exists (`class xc yc w h`).
-5. **Corrupted File Safeguard**: Catches broken byte read errors gracefully without halting DDP training.
+`dataset.py` natively parses the exact dataset folder structure:
+- **`unlabeled/`** (`UnlabeledWildDataset`): Recursively walks all subfolder depths with unannotated images (FMD, COVID faces). Returns `(img, -1, False)`.
+- **`name_label/`** (`NameLabeledFaceDataset`):
+  - `ROF/`: Folder names = identity names (`ROF/Person_A/img.jpg`).
+  - `face_with_mask/`: Regex filename extraction across all depths (`Elon_Musk_0001.jpg` $\to$ `"Elon_Musk"`).
+  - `face_detection_in_wild_dataset/`: Folder names = identity names.
+- **`bb_label/`** (`BoundingBoxFaceDataset`):
+  - `facemaskyolo/data/`: `images/` & `labels/` subfolders (YOLO `.txt` files).
+  - `darknet/`: Image & `.txt` label files in same folder with matching base names. Automatically crops bounding box face patches.
+- **`UnifiedWildFaceDataset`**: Combines all three datastreams into a single high-throughput loader.
 
 ---
 
