@@ -22,9 +22,9 @@ export PYTHONUNBUFFERED=1
 export PYTHONWARNINGS="ignore"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
-export GLOO_SOCKET_IFNAME=ib0,eth0,ens,enp
-export NCCL_SOCKET_IFNAME=ib0,eth0,ens,enp
-export NCCL_IB_DISABLE=0
+export GLOO_SOCKET_IFNAME=eth0,ib0,ens,enp
+export NCCL_SOCKET_IFNAME=eth0,ib0,ens,enp
+export NCCL_IB_DISABLE=1
 export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
 
 mkdir -p $HOME/Face_Detection_In_Wild/weights
