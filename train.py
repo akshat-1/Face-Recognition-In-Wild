@@ -246,7 +246,7 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
     criterion_mask = nn.BCELoss()
     optimizer = optim.Adam(anet.parameters(), lr=1e-3, weight_decay=1e-4)
     
-    phase2_epochs = min(cfg.train.epochs, 30)
+    phase2_epochs = min(cfg.train.epochs, 10)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=phase2_epochs, eta_min=1e-5)
     scaler = GradScaler('cuda', enabled=cfg.model.fp16 and device.type == 'cuda')
     

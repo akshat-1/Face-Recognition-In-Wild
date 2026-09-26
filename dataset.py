@@ -368,6 +368,7 @@ UnlabeledFaceDataset = UnlabeledWildDataset
 class Phase2UnifiedAttributeDataset(data.Dataset):
     """
     Unified Phase 2 Dataset combining CelebA, Labeled (name_label), Unlabeled (wild/FMD/COVID), and Bounding Box datasets.
+    Handles missing/incomplete image file exceptions gracefully during parallel uploads.
     Implements self-supervised synthetic occlusion augmentation to generate ground-truth 7x7 spatial occlusion maps.
     """
     def __init__(self, root_dir: str = None, celeba_dir: str = None, attr_file: str = None, is_train: bool = True, image_size=(112, 112)):
@@ -379,7 +380,7 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
         
         self.samples = []
         
-        # 1. Parse CelebA annotations if present (.csv or .txt)
+        # 1. Locate CelebA attribute annotation file (.csv or .txt)
         if self.root_dir:
             parent_dir = os.path.dirname(self.root_dir.rstrip('/'))
             if attr_file is None or not os.path.exists(attr_file):
@@ -397,28 +398,50 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
                     if os.path.exists(pf):
                         attr_file = pf
                         break
+                        
             if attr_file and os.path.exists(attr_file):
+                celeba_img_roots = [
+                    self.root_dir,
+                    os.path.join(self.root_dir, "img_align_celeba"),
+                    os.path.join(self.root_dir, "img_align_celeba", "img_align_celeba"),
+                    os.path.join(parent_dir, "unlabeled", "img_align_celeba"),
+                    os.path.join(parent_dir, "unlabeled", "img_align_celeba", "img_align_celeba"),
+                ]
+                
+                raw_entries = []
                 if attr_file.endswith('.csv'):
                     import csv
-                    with open(attr_file, 'r') as f:
+                    with open(attr_file, 'r', encoding='utf-8', errors='ignore') as f:
                         reader = csv.reader(f)
                         header = next(reader)
                         for row in reader:
                             if len(row) >= 41:
                                 img_name = row[0]
                                 attrs = [1.0 if int(x) == 1 else 0.0 for x in row[1:]]
-                                self.samples.append((os.path.join(self.root_dir, img_name), torch.tensor(attrs, dtype=torch.float32)))
+                                raw_entries.append((img_name, torch.tensor(attrs, dtype=torch.float32)))
                 else:
-                    with open(attr_file, 'r') as f:
+                    with open(attr_file, 'r', encoding='utf-8', errors='ignore') as f:
                         lines = f.readlines()[2:]
                         for line in lines:
                             parts = line.strip().split()
                             if len(parts) >= 41:
                                 img_name = parts[0]
                                 attrs = [1.0 if int(x) == 1 else 0.0 for x in parts[1:]]
-                                self.samples.append((os.path.join(self.root_dir, img_name), torch.tensor(attrs, dtype=torch.float32)))
+                                raw_entries.append((img_name, torch.tensor(attrs, dtype=torch.float32)))
+                                
+                for img_name, attrs in raw_entries:
+                    found_path = None
+                    for c_root in celeba_img_roots:
+                        cand = os.path.join(c_root, img_name)
+                        if os.path.exists(cand):
+                            found_path = cand
+                            break
+                    if found_path:
+                        self.samples.append((found_path, attrs))
+                    else:
+                        self.samples.append((os.path.join(self.root_dir, img_name), attrs))
         
-        # 2. Automatically index all wild datasets (unlabeled, name_label, bb_label)
+        # 2. Index all wild datasets (unlabeled, name_label, bb_label)
         search_dirs = []
         if self.root_dir and os.path.exists(self.root_dir):
             search_dirs.append(self.root_dir)
@@ -433,6 +456,8 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
         for sdir in search_dirs:
             if sdir and os.path.exists(sdir):
                 for root, _, files in os.walk(sdir):
+                    if "img_align_celeba" in root:
+                        continue
                     for f in files:
                         if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                             wild_images.append(os.path.join(root, f))
@@ -453,13 +478,16 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
 
     def __getitem__(self, idx):
         path, attr_target = self.samples[idx % len(self.samples)]
-        if path == "dummy_attr":
-            img = Image.new('RGB', self.image_size, (128, 128, 128))
-        else:
+        img = None
+        if path != "dummy_attr":
             try:
-                img = Image.open(path).convert('RGB')
+                if os.path.exists(path) and os.path.getsize(path) > 0:
+                    img = Image.open(path).convert('RGB')
             except Exception:
-                img = Image.new('RGB', self.image_size, (0, 0, 0))
+                img = None
+                
+        if img is None:
+            img = Image.new('RGB', self.image_size, (128, 128, 128))
                 
         w, h = img.size
         # Generate 7x7 spatial occlusion target mask (1.0 = clean, 0.0 = occluded)
@@ -467,7 +495,6 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
         
         # Self-Supervised Synthetic Occlusion Augmentation (50% probability during training)
         if self.is_train and torch.rand(1).item() > 0.5:
-            # Random occlusion rectangle in 7x7 grid
             r_start = torch.randint(0, 5, (1,)).item()
             r_end = r_start + torch.randint(2, 4, (1,)).item()
             c_start = torch.randint(0, 5, (1,)).item()
@@ -475,13 +502,15 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
             
             gt_mask[0, r_start:r_end, c_start:c_end] = 0.0
             
-            # Apply corresponding patch overlay to image
             x1, y1 = int((c_start / 7.0) * w), int((r_start / 7.0) * h)
             x2, y2 = int((c_end / 7.0) * w), int((r_end / 7.0) * h)
             
-            from PIL import ImageDraw
-            draw = ImageDraw.Draw(img)
-            draw.rectangle([x1, y1, x2, y2], fill=(40, 40, 40))
+            try:
+                from PIL import ImageDraw
+                draw = ImageDraw.Draw(img)
+                draw.rectangle([x1, y1, x2, y2], fill=(40, 40, 40))
+            except Exception:
+                pass
             
         img_tensor = self.transform(img)
         return img_tensor, attr_target, gt_mask
