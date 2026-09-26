@@ -260,8 +260,10 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
             with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
                 attr_logits, occ_mask, _ = anet(images)
                 loss_attr = criterion_bce(attr_logits, attr_targets)
-                loss_mask = criterion_mask(occ_mask, gt_masks)
-                loss = loss_attr + 0.5 * loss_mask
+                
+            # BCELoss is evaluated in float32 outside AMP autocast for numerical stability
+            loss_mask = criterion_mask(occ_mask.float(), gt_masks.float())
+            loss = loss_attr + 0.5 * loss_mask
                 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
