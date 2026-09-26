@@ -33,7 +33,7 @@ mkdir -p $HOME/Face_Detection_In_Wild/weights
 source $HOME/miniforge3/bin/activate
 conda activate venv_gpu
 
-MASTER_ADDR=$(head -n 1 $PBS_NODEFILE)
+MASTER_ADDR=$(head -n 1 $PBS_NODEFILE | cut -d'.' -f1)
 MASTER_PORT=29512
 NNODES=$(sort -u $PBS_NODEFILE | wc -l)
 
@@ -50,7 +50,7 @@ export MASTER_ADDR=$MASTER_ADDR
 export MASTER_PORT=$MASTER_PORT
 export NNODES=$NNODES
 
-# Launch multi-node 4-GPU PyTorch DDP via pbsdsh across all allocated nodes
-pbsdsh -v $HOME/Face_Detection_In_Wild/run_node_ddp_occupose.sh 2>&1 | tee -a "$HOME/Face_Detection_In_Wild/train_aqua_live.log"
+# Launch multi-node 4-GPU PyTorch DDP via pbsdsh with explicit parameters
+pbsdsh -v $HOME/Face_Detection_In_Wild/run_node_ddp_occupose.sh "$PBS_NODEFILE" "$MASTER_ADDR" "$MASTER_PORT" "$NNODES" 2>&1 | tee -a "$HOME/Face_Detection_In_Wild/train_aqua_live.log"
 
 echo "Training job completed at $(date)"

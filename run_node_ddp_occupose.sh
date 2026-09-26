@@ -15,19 +15,40 @@ if ! $HOME/miniforge3/envs/venv_gpu/bin/python -c "import torch; assert torch.cu
     exit 1
 fi
 
-if [ -z "$PBS_NODEFILE" ]; then
+ARG_NODEFILE="$1"
+ARG_MASTER="$2"
+ARG_PORT="$3"
+ARG_NNODES="$4"
+
+if [ -n "$ARG_NODEFILE" ] && [ -f "$ARG_NODEFILE" ]; then
+    PBS_NODEFILE="$ARG_NODEFILE"
+fi
+
+if [ -z "$PBS_NODEFILE" ] || [ ! -f "$PBS_NODEFILE" ]; then
     PBS_NODEFILE="/tmp/pbs_nodefile_fallback"
 fi
 
-if [ -f "$PBS_NODEFILE" ]; then
+if [ -n "$ARG_MASTER" ]; then
+    MASTER_ADDR="$ARG_MASTER"
+elif [ -f "$PBS_NODEFILE" ]; then
     MASTER_ADDR=$(head -n 1 $PBS_NODEFILE | cut -d'.' -f1)
-    NNODES=$(sort -u $PBS_NODEFILE | wc -l)
 else
     MASTER_ADDR=$(hostname | cut -d'.' -f1)
-    NNODES=1
 fi
 
-MASTER_PORT=29512
+if [ -n "$ARG_PORT" ]; then
+    MASTER_PORT="$ARG_PORT"
+else
+    MASTER_PORT=29512
+fi
+
+if [ -n "$ARG_NNODES" ]; then
+    NNODES="$ARG_NNODES"
+elif [ -f "$PBS_NODEFILE" ]; then
+    NNODES=$(sort -u $PBS_NODEFILE | wc -l)
+else
+    NNODES=1
+fi
 
 # Determine node rank dynamically from PBS environment or nodefile
 HOSTNAME_SHORT=$(hostname | cut -d'.' -f1)
@@ -53,42 +74,21 @@ fi
 
 echo "⚡ [OccuPose Unit Rank $NODE_RANK / $NNODES] Launching $NUM_GPUS-GPU torchrun on $HOSTNAME_SHORT (Master: $MASTER_ADDR:$MASTER_PORT)..."
 
-if [ "$NODE_RANK" -eq 0 ]; then
-    /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
-      --nnodes=$NNODES \
-      --nproc_per_node=$NUM_GPUS \
-      --node_rank=$NODE_RANK \
-      --master_addr=$MASTER_ADDR \
-      --master_port=$MASTER_PORT \
-      /lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py \
-      --data_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/name_label" \
-      --unlabeled_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled" \
-      --celeba_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/celeba" \
-      --checkpoint_dir "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/weights" \
-      --backbone iresnet100 \
-      --batch_size 32 \
-      --epochs 100 \
-      --resume \
-      --retrain_phase2 \
-      --lr 0.1 \
-      --fp16 2>&1 | tee -a "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_aqua_live.log"
-else
-    /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
-      --nnodes=$NNODES \
-      --nproc_per_node=$NUM_GPUS \
-      --node_rank=$NODE_RANK \
-      --master_addr=$MASTER_ADDR \
-      --master_port=$MASTER_PORT \
-      /lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py \
-      --data_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/name_label" \
-      --unlabeled_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled" \
-      --celeba_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/celeba" \
-      --checkpoint_dir "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/weights" \
-      --backbone iresnet100 \
-      --batch_size 32 \
-      --epochs 100 \
-      --resume \
-      --retrain_phase2 \
-      --lr 0.1 \
-      --fp16 2>&1 | tee -a "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_aqua_live.log"
-fi
+/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
+  --nnodes=$NNODES \
+  --nproc_per_node=$NUM_GPUS \
+  --node_rank=$NODE_RANK \
+  --master_addr=$MASTER_ADDR \
+  --master_port=$MASTER_PORT \
+  /lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py \
+  --data_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/name_label" \
+  --unlabeled_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled" \
+  --celeba_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/celeba" \
+  --checkpoint_dir "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/weights" \
+  --backbone iresnet100 \
+  --batch_size 32 \
+  --epochs 100 \
+  --resume \
+  --retrain_phase2 \
+  --lr 0.1 \
+  --fp16 2>&1 | tee -a "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_aqua_live.log"
