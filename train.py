@@ -194,7 +194,7 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
         print(f"\n[Phase 1 Complete] Final Phase 1 Checkpoint saved to: {ckpt_path}")
     return backbone, num_classes
 
-def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp: bool = False, rank: int = 0, local_rank: int = 0, world_size: int = 1):
+def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp: bool = False, rank: int = 0, local_rank: int = 0, world_size: int = 1, force_retrain: bool = False):
     """
     Phase 2 Training: ANet Multi-Task 40-Attribute Parser & Spatial Occlusion Attention.
     """
@@ -213,9 +213,9 @@ def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp
     
     anet = ANetAttributeParser(num_attributes=40).to(device)
     
-    # Check if completed Phase 2 pretrained checkpoint exists
+    # Check if completed Phase 2 pretrained checkpoint exists (skip only if not force_retrain)
     phase2_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase2_anet_attributes.pt")
-    if os.path.exists(phase2_ckpt):
+    if os.path.exists(phase2_ckpt) and not force_retrain:
         try:
             ckpt_data = torch.load(phase2_ckpt, map_location=device)
             anet.load_state_dict(ckpt_data['anet'])
@@ -225,6 +225,10 @@ def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp
         except Exception as e:
             if rank == 0:
                 print(f"Warning: Could not load {phase2_ckpt}: {e}")
+                
+    if force_retrain and rank == 0:
+        print(f"[Phase 2 Reset] Force retraining Phase 2 ANet attribute parser from scratch using Phase 1 backbone weights...")
+
     if is_ddp and device.type == 'cuda':
         anet = nn.parallel.DistributedDataParallel(anet, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
         
@@ -239,12 +243,14 @@ def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp
             sampler.set_epoch(epoch)
         running_loss = 0.0
         for images, attr_targets in train_loader:
-            images, attr_targets = images.to(device), attr_targets.to(device)
+            images, attr_targets = images.to(device, non_blocking=True), attr_targets.to(device, non_blocking=True)
             
             optimizer.zero_grad()
             with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
                 attr_logits, occ_mask, _ = anet(images)
-                loss = criterion_bce(attr_logits, attr_targets)
+                loss_attr = criterion_bce(attr_logits, attr_targets)
+                loss_mask = 0.01 * occ_mask.pow(2).mean() # Regularizer so spatial_mask_head weights receive gradients in DDP
+                loss = loss_attr + loss_mask
                 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -337,6 +343,7 @@ def main():
     parser.add_argument("--lr", type=float, default=0.1, help="Learning rate")
     parser.add_argument("--fp16", action="store_true", help="Enable AMP FP16")
     parser.add_argument("--resume", action="store_true", help="Resume training from latest checkpoint if available")
+    parser.add_argument("--retrain_phase2", action="store_true", help="Force retraining Phase 2 ANet attribute parser (ignore old Phase 2 checkpoint)")
     args = parser.parse_args()
     
     is_ddp, rank, local_rank, world_size, device = setup_ddp()
@@ -362,7 +369,7 @@ def main():
     backbone, num_classes = train_phase1_backbone_curricular(cfg, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, resume=args.resume)
     
     # Phase 2: Train ANet Attribute Parser
-    anet = train_phase2_anet_attributes(cfg, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size)
+    anet = train_phase2_anet_attributes(cfg, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, force_retrain=args.retrain_phase2)
     
     # Phase 3: Train GCN Semi-Supervised Link Predictor & Pseudo-Labeler on Unlabeled Faces
     train_phase3_semi_supervised_gcn(cfg, backbone, num_classes, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size)
