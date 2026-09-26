@@ -38,8 +38,8 @@ class OccuPoseBroadDictPipeline(nn.Module):
         """
         self.eval()
         with torch.no_grad():
-            # Step 1: Detect face bounding boxes
-            boxes, det_scores = self.detector(img_tensor, score_threshold=score_threshold)
+            # Step 1: Detect face bounding boxes & landmarks via LNet
+            boxes, det_scores, landmarks = self.detector(img_tensor, score_threshold=score_threshold)
             
             if boxes.size(0) == 0:
                 return []
@@ -58,8 +58,9 @@ class OccuPoseBroadDictPipeline(nn.Module):
                 crop_patch = img_tensor[:, :, y1:y2, x1:x2]
                 resized_crop = F.interpolate(crop_patch, size=(112, 112), mode='bilinear', align_corners=False)
                 
-                # Step 2: Semantic attribute & occlusion parsing
-                attr_logits, occ_mask, is_occluded = self.attribute_parser(resized_crop)
+                # Step 2: Semantic attribute & occlusion parsing via ANet Dual-Path
+                lm_crop = landmarks[i] if landmarks.size(0) > i else None
+                attr_logits, occ_mask, is_occluded = self.attribute_parser(resized_crop, lm_crop)
                 
                 # Step 3: Pose estimation heuristic & PIM Frontalization
                 # Heuristic pose yaw estimation from horizontal crop ratio imbalance
