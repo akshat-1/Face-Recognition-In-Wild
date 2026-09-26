@@ -13,8 +13,7 @@ from torch.amp import autocast, GradScaler
 
 from config import SystemConfig
 from dataset import WildFaceDataset, UnlabeledFaceDataset, CelebAAttributeDataset
-from losses.curricular_loss import CurricularFaceLoss
-from losses.broadface_queue import BroadFaceMemoryQueue
+from losses.broadface_queue import BroadFaceCurricularLoss
 from models.backbone import ResNet100Backbone, vit_face_base
 from models.anet_attribute import ANetAttributeParser
 from models.gcn_cluster import GCNLinkPredictor
@@ -77,18 +76,14 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
     
     backbone = get_backbone(cfg).to(device)
     
-    curricular_loss_fn = CurricularFaceLoss(
+    broadface_loss_fn = BroadFaceCurricularLoss(
         in_features=cfg.model.embedding_dim,
         num_classes=num_classes,
-        s=cfg.loss.scale,
-        m=cfg.loss.margin,
-        alpha=cfg.loss.ema_alpha
-    ).to(device)
-    
-    broadface_queue = BroadFaceMemoryQueue(
+        scale_factor=cfg.loss.scale,
+        margin=cfg.loss.margin,
+        alpha=cfg.loss.ema_alpha,
         queue_size=cfg.loss.queue_size,
-        feature_dim=cfg.model.embedding_dim,
-        momentum=cfg.loss.broadface_momentum
+        compensate=True
     ).to(device)
     
     # Auto-resume from latest checkpoint if present
@@ -99,9 +94,8 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
         try:
             ckpt_data = torch.load(latest_ckpt, map_location=device)
             backbone.load_state_dict(ckpt_data['backbone'])
-            curricular_loss_fn.load_state_dict(ckpt_data['curricular_loss'])
-            if 'broadface_queue' in ckpt_data:
-                broadface_queue.load_state_dict(ckpt_data['broadface_queue'])
+            if 'broadface_loss_fn' in ckpt_data:
+                broadface_loss_fn.load_state_dict(ckpt_data['broadface_loss_fn'])
             start_epoch = ckpt_data.get('epoch', 1) + 1
             if rank == 0:
                 print(f"✓ Resumed training state from checkpoint: {latest_ckpt} (Starting at Epoch {start_epoch})")
@@ -113,7 +107,7 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
         backbone = nn.parallel.DistributedDataParallel(backbone, device_ids=[local_rank], output_device=local_rank)
     
     optimizer = optim.SGD(
-        list(backbone.parameters()) + list(curricular_loss_fn.parameters()),
+        list(backbone.parameters()) + list(broadface_loss_fn.parameters()),
         lr=cfg.train.learning_rate,
         momentum=cfg.train.momentum,
         weight_decay=cfg.train.weight_decay
@@ -122,7 +116,7 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
     scaler = GradScaler('cuda', enabled=cfg.model.fp16 and device.type == 'cuda')
     
     backbone.train()
-    curricular_loss_fn.train()
+    broadface_loss_fn.train()
     
     for epoch in range(start_epoch, cfg.train.epochs + 1):
         if sampler is not None:
@@ -139,37 +133,18 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
             optimizer.zero_grad()
             with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
                 embeddings = backbone(images)
-                loss_batch = curricular_loss_fn(embeddings, labels)
-                
-                # Official BroadFace Queue Loss over past compensated embeddings
-                if broadface_queue.is_full[0] or broadface_queue.queue_ptr[0] > 128:
-                    q_embeds, q_labels = broadface_queue.get_queue_samples()
-                    if q_embeds.size(0) > 4096:
-                        perm_idx = torch.randperm(q_embeds.size(0), device=device)[:4096]
-                        q_embeds_sub, q_labels_sub = q_embeds[perm_idx], q_labels[perm_idx]
-                    else:
-                        q_embeds_sub, q_labels_sub = q_embeds, q_labels
-                    loss_queue = curricular_loss_fn(q_embeds_sub, q_labels_sub)
-                    loss = loss_batch + 0.5 * loss_queue
-                else:
-                    loss = loss_batch
+                loss = broadface_loss_fn(embeddings, labels)
                 
             scaler.scale(loss).backward()
-            with torch.no_grad():
-                old_weight = curricular_loss_fn.weight.clone()
-                
             scaler.step(optimizer)
             scaler.update()
-            
-            broadface_queue.update(embeddings.detach(), labels)
-            broadface_queue.compensate_weight_drift(old_weight, curricular_loss_fn.weight)
             running_loss += loss.item()
             
         scheduler.step()
         avg_loss = running_loss / max(1, len(train_loader))
-        t_param = curricular_loss_fn.t.item()
+        t_param = broadface_loss_fn.t.item()
         if rank == 0:
-            print(f"Epoch [{epoch}/{cfg.train.epochs}] - Curricular Loss: {avg_loss:.4f} | EMA t: {t_param:.4f}")
+            print(f"Epoch [{epoch}/{cfg.train.epochs}] - BroadFace Curricular Loss: {avg_loss:.4f} | EMA t: {t_param:.4f}")
             
             # Periodic checkpointing every 5 epochs
             if epoch % 5 == 0 or epoch == cfg.train.epochs:
@@ -177,8 +152,7 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
                 save_dict = {
                     'epoch': epoch,
                     'backbone': backbone_state,
-                    'curricular_loss': curricular_loss_fn.state_dict(),
-                    'broadface_queue': broadface_queue.state_dict()
+                    'broadface_loss_fn': broadface_loss_fn.state_dict(),
                 }
                 periodic_path = os.path.join(cfg.train.checkpoint_dir, f"phase1_epoch_{epoch}.pt")
                 torch.save(save_dict, periodic_path)
@@ -191,8 +165,7 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
         torch.save({
             'epoch': cfg.train.epochs,
             'backbone': backbone_state,
-            'curricular_loss': curricular_loss_fn.state_dict(),
-            'broadface_queue': broadface_queue.state_dict()
+            'broadface_loss_fn': broadface_loss_fn.state_dict(),
         }, ckpt_path)
         print(f"\n[Phase 1 Complete] Final Phase 1 Checkpoint saved to: {ckpt_path}")
     return backbone, num_classes
