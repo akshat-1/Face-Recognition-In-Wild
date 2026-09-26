@@ -112,6 +112,8 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
         momentum=cfg.train.momentum,
         weight_decay=cfg.train.weight_decay
     )
+    for group in optimizer.param_groups:
+        group.setdefault('initial_lr', cfg.train.learning_rate)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.train.epochs, last_epoch=start_epoch - 2 if start_epoch > 1 else -1)
     scaler = GradScaler('cuda', enabled=cfg.model.fp16 and device.type == 'cuda')
     
