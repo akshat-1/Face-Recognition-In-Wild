@@ -86,6 +86,19 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
         compensate=True
     ).to(device)
     
+    # Check if completed Phase 1 pretrained checkpoint exists
+    phase1_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase1_backbone_curricular.pt")
+    if os.path.exists(phase1_ckpt):
+        try:
+            ckpt_data = torch.load(phase1_ckpt, map_location=device)
+            backbone.load_state_dict(ckpt_data['backbone'])
+            if rank == 0:
+                print(f"\n[Phase 1 Pretrained] Loaded 100-epoch trained backbone weights from {phase1_ckpt}. Skipping Phase 1 training!\n")
+            return backbone, num_classes
+        except Exception as e:
+            if rank == 0:
+                print(f"Warning: Could not load {phase1_ckpt}: {e}")
+
     # Resume from latest checkpoint if explicitly requested
     start_epoch = 1
     os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
@@ -199,6 +212,19 @@ def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp
         train_loader = DataLoader(celeba_dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.dataset.num_workers)
     
     anet = ANetAttributeParser(num_attributes=40).to(device)
+    
+    # Check if completed Phase 2 pretrained checkpoint exists
+    phase2_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase2_anet_attributes.pt")
+    if os.path.exists(phase2_ckpt):
+        try:
+            ckpt_data = torch.load(phase2_ckpt, map_location=device)
+            anet.load_state_dict(ckpt_data['anet'])
+            if rank == 0:
+                print(f"\n[Phase 2 Pretrained] Loaded ANet attribute parser weights from {phase2_ckpt}. Skipping Phase 2 training!\n")
+            return anet
+        except Exception as e:
+            if rank == 0:
+                print(f"Warning: Could not load {phase2_ckpt}: {e}")
     if is_ddp and device.type == 'cuda':
         anet = nn.parallel.DistributedDataParallel(anet, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
         
@@ -272,6 +298,9 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
             
         if hasattr(unlabeled_dataset, "rescan"):
             unlabeled_dataset.rescan()
+            if is_ddp:
+                sampler = DistributedSampler(unlabeled_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+                unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=cfg.train.batch_size, sampler=sampler, num_workers=cfg.dataset.num_workers)
             
         total_clustered = 0
         for images, labels, is_labeled in unlabeled_loader:
