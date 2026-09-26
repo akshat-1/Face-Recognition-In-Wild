@@ -2,7 +2,6 @@ __pycache__/
 *.pyc
 *.pt
 .venv/
-transfer_drive_to_aqua.py
-train_aqua.cmd
-download_drive_aqua.cmd
-transfer_stream_drive_to_aqua.py
+Face_Dataset/
+scratch/
+extracted_papers/
