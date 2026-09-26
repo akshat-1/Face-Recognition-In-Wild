@@ -4,66 +4,113 @@ import glob
 from PIL import Image
 import torch
 import torch.utils.data as data
-import torchvision.transforms as transforms
+
+try:
+    import torchvision.transforms as transforms
+except Exception:
+    transforms = None
 
 VALID_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
+
+class PurePyTorchImageTransform:
+    """
+    Fallback Image Transform using pure PyTorch & PIL.
+    Requires ZERO external C-libraries.
+    """
+    def __init__(self, image_size=(112, 112), is_train=True):
+        self.image_size = image_size
+        self.is_train = is_train
+
+    def __call__(self, img: Image.Image) -> torch.Tensor:
+        if img.size != self.image_size:
+            img = img.resize(self.image_size, Image.BILINEAR)
+            
+        if self.is_train and torch.rand(1).item() > 0.5:
+            img = img.transpose(Image.FLIP_LEFT_RIGHT)
+            
+        img_bytes = img.tobytes()
+        tensor = torch.frombuffer(img_bytes, dtype=torch.uint8)
+        tensor = tensor.view(self.image_size[1], self.image_size[0], 3).permute(2, 0, 1).float() / 255.0
+        tensor = (tensor - 0.5) / 0.5
+        return tensor
+
+def get_default_transform(image_size=(112, 112), is_train=True):
+    if transforms is not None:
+        try:
+            if is_train:
+                return transforms.Compose([
+                    transforms.Resize(image_size),
+                    transforms.RandomHorizontalFlip(),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+                ])
+            else:
+                return transforms.Compose([
+                    transforms.Resize(image_size),
+                    transforms.ToTensor(),
+                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
+                ])
+        except Exception:
+            pass
+    return PurePyTorchImageTransform(image_size=image_size, is_train=is_train)
 
 def parse_yolo_txt(txt_path: str):
     """
     Parses YOLO format bounding box annotation file (.txt).
-    Format per line: class_id x_center y_center width height (normalized [0, 1])
-    Returns list of bboxes: [[xc, yc, w, h], ...]
     """
     bboxes = []
     try:
         if os.path.exists(txt_path):
-            with open(txt_path, 'r') as f:
+            with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f:
                 for line in f:
                     parts = line.strip().split()
                     if len(parts) >= 5:
-                        vals = [float(x) for x in parts[1:5]]
-                        bboxes.append(vals) # [xc, yc, w, h]
+                        try:
+                            vals = [float(x) for x in parts[1:5]]
+                            bboxes.append(vals)
+                        except ValueError:
+                            pass
     except Exception:
         pass
     return bboxes
 
 class UnlabeledWildDataset(data.Dataset):
     """
-    Dataset Loader for 'unlabeled/' directory.
-    Recursively discovers all face images across arbitrary subfolder depths and locations.
-    Returns 3-tuple: (img_tensor, -1, False)
+    Dynamic Dataset Loader for 'unlabeled/' directory.
+    Supports dynamic rescanning of constantly growing datasets uploaded in parallel.
     """
     def __init__(self, unlabeled_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
         super(UnlabeledWildDataset, self).__init__()
         self.unlabeled_dir = unlabeled_dir
         self.image_size = image_size
-        
-        if transform is None:
-            self.transform = transforms.Compose([
-                transforms.Resize(image_size),
-                transforms.RandomHorizontalFlip() if is_train else transforms.Lambda(lambda x: x),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-            ])
-        else:
-            self.transform = transform
-            
+        self.transform = transform if transform is not None else get_default_transform(image_size, is_train)
         self.samples = []
-        if unlabeled_dir and os.path.exists(unlabeled_dir):
-            for root, _, files in os.walk(unlabeled_dir):
+        self.rescan()
+
+    def rescan(self):
+        """
+        Dynamically rescans the unlabeled directory to index newly arrived images uploaded in parallel.
+        """
+        prev_count = len(self.samples)
+        self.samples = []
+        if self.unlabeled_dir and os.path.exists(self.unlabeled_dir):
+            for root, _, files in os.walk(self.unlabeled_dir):
                 for f in files:
                     if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                         self.samples.append(os.path.join(root, f))
         else:
-            # Fallback synthetic samples for dry-run testing
             for _ in range(500):
                 self.samples.append("dummy_unlabeled")
+                
+        if len(self.samples) != prev_count:
+            print(f"[Dynamic Unlabeled Rescan] Indexed {len(self.samples)} images (New: +{len(self.samples) - prev_count})")
+        return len(self.samples)
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path = self.samples[idx]
+        path = self.samples[idx % len(self.samples)]
         if path == "dummy_unlabeled":
             img_tensor = torch.randn(3, *self.image_size)
         else:
@@ -73,68 +120,54 @@ class UnlabeledWildDataset(data.Dataset):
             except Exception:
                 img_tensor = torch.zeros(3, *self.image_size)
                 
-        return img_tensor, -1, False # is_labeled = False
+        return img_tensor, -1, False
 
 
 class NameLabeledFaceDataset(data.Dataset):
     """
-    Dataset Loader for 'name_label/' directory containing:
-    1. ROF/ : Subfolders are identity names (e.g. ROF/Person_A/img1.jpg -> "Person_A")
-    2. face_with_mask/ : Filenames contain identity names at various folder depths (e.g. Elon_Musk_0001.jpg -> "Elon_Musk")
-    3. face_detection_in_wild_dataset/ : Subfolders are identity names (e.g. face_detection_in_wild_dataset/Subject_B/img2.jpg -> "Subject_B")
-    
-    Returns 3-tuple: (img_tensor, label_idx, True)
+    Dynamic Dataset Loader for 'name_label/' directory.
+    Supports dynamic rescanning of constantly growing labeled datasets uploaded in parallel.
     """
     def __init__(self, name_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
         super(NameLabeledFaceDataset, self).__init__()
         self.name_label_dir = name_label_dir
         self.image_size = image_size
-        
-        if transform is None:
-            if is_train:
-                self.transform = transforms.Compose([
-                    transforms.Resize(image_size),
-                    transforms.RandomHorizontalFlip(),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-                ])
-            else:
-                self.transform = transforms.Compose([
-                    transforms.Resize(image_size),
-                    transforms.ToTensor(),
-                    transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-                ])
-        else:
-            self.transform = transform
-            
+        self.transform = transform if transform is not None else get_default_transform(image_size, is_train)
         self.samples = []
         self.class_to_idx = {}
+        self.rescan()
+
+    def rescan(self):
+        """
+        Dynamically rescans name_label/ directory to index newly arrived identity images.
+        """
+        prev_count = len(self.samples)
+        self.samples = []
         
-        if name_label_dir and os.path.exists(name_label_dir):
+        if self.name_label_dir and os.path.exists(self.name_label_dir):
             self._parse_name_label_directory()
         else:
-            # Fallback synthetic labeled data for dry-run testing
             self.class_to_idx = {f"Subject_{i}": i for i in range(50)}
             for i in range(500):
                 self.samples.append(("dummy_labeled", i % 50))
+                
+        if len(self.samples) != prev_count:
+            print(f"[Dynamic NameLabeled Rescan] Indexed {len(self.samples)} images across {len(self.class_to_idx)} identities (New: +{len(self.samples) - prev_count})")
+        return len(self.samples)
 
     def _parse_name_label_directory(self):
-        # 1. Parse ROF/ (subfolders = identities)
         rof_dir = os.path.join(self.name_label_dir, "ROF")
         if os.path.exists(rof_dir):
             self._parse_folder_identities(rof_dir, prefix="ROF_")
             
-        # 2. Parse face_detection_in_wild_dataset/ (subfolders = identities)
         wild_dir = os.path.join(self.name_label_dir, "face_detection_in_wild_dataset")
         if os.path.exists(wild_dir):
             self._parse_folder_identities(wild_dir, prefix="WILD_")
             
-        # 3. Parse face_with_mask/ (filenames contain identity names at various depths)
         mask_dir = os.path.join(self.name_label_dir, "face_with_mask")
         if os.path.exists(mask_dir):
             self._parse_filename_identities(mask_dir)
             
-        # Fallback if specific subfolders aren't named exactly, walk whole name_label_dir
         if len(self.samples) == 0:
             self._parse_folder_identities(self.name_label_dir, prefix="")
 
@@ -151,9 +184,7 @@ class NameLabeledFaceDataset(data.Dataset):
                     self.samples.append((os.path.join(root, f), label_idx))
 
     def _parse_filename_identities(self, base_dir: str):
-        # Regex to extract person identity name from filenames like Elon_Musk_0001.jpg or subject42_masked.png
         pattern = re.compile(r'^(.*?)(?:_\d+)?\.(?:jpg|jpeg|png|bmp|webp)$', re.IGNORECASE)
-        
         for root, _, files in os.walk(base_dir):
             for f in files:
                 if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
@@ -164,14 +195,13 @@ class NameLabeledFaceDataset(data.Dataset):
                     if identity_name not in self.class_to_idx:
                         self.class_to_idx[identity_name] = len(self.class_to_idx)
                     label_idx = self.class_to_idx[identity_name]
-                    
                     self.samples.append((os.path.join(root, f), label_idx))
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path, label_idx = self.samples[idx]
+        path, label_idx = self.samples[idx % len(self.samples)]
         if path == "dummy_labeled":
             img_tensor = torch.randn(3, *self.image_size)
         else:
@@ -181,75 +211,58 @@ class NameLabeledFaceDataset(data.Dataset):
             except Exception:
                 img_tensor = torch.zeros(3, *self.image_size)
                 
-        return img_tensor, label_idx, True # is_labeled = True
+        return img_tensor, label_idx, True
 
 
 class BoundingBoxFaceDataset(data.Dataset):
     """
-    Dataset Loader for 'bb_label/' directory containing:
-    1. facemaskyolo/data/ : Images in 'images/' folder, labels in 'labels/' folder (YOLO .txt files)
-    2. darknet/ : Images and label .txt files in the SAME folder with matching base names
-    
-    Crops face region using YOLO bounding box coordinates before returning.
-    Returns 3-tuple: (cropped_face_tensor, label_idx, True)
+    Dynamic Dataset Loader for 'bb_label/' directory.
+    Supports dynamic rescanning of bounding box datasets uploaded in parallel.
     """
     def __init__(self, bb_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
         super(BoundingBoxFaceDataset, self).__init__()
         self.bb_label_dir = bb_label_dir
         self.image_size = image_size
-        
-        if transform is None:
-            self.transform = transforms.Compose([
-                transforms.Resize(image_size),
-                transforms.ToTensor(),
-                transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-            ])
-        else:
-            self.transform = transform
-            
-        self.samples = [] # List of tuples: (image_path, bbox_list, class_id)
-        
-        if bb_label_dir and os.path.exists(bb_label_dir):
+        self.transform = transform if transform is not None else get_default_transform(image_size, is_train)
+        self.samples = []
+        self.rescan()
+
+    def rescan(self):
+        """
+        Dynamically rescans bb_label/ directory for newly uploaded YOLO / Darknet bounding box images.
+        """
+        prev_count = len(self.samples)
+        self.samples = []
+        if self.bb_label_dir and os.path.exists(self.bb_label_dir):
             self._parse_bb_label_directory()
         else:
-            # Fallback synthetic samples
             for i in range(200):
                 self.samples.append(("dummy_bb", None, 0))
+                
+        if len(self.samples) != prev_count:
+            print(f"[Dynamic BoundingBox Rescan] Indexed {len(self.samples)} bounding box images (New: +{len(self.samples) - prev_count})")
+        return len(self.samples)
 
     def _parse_bb_label_directory(self):
-        # 1. Parse facemaskyolo/data/ (images/ and labels/ separate subfolders)
-        yolo_images_dir = os.path.join(self.bb_label_dir, "facemaskyolo", "data", "images")
-        yolo_labels_dir = os.path.join(self.bb_label_dir, "facemaskyolo", "data", "labels")
-        
-        if os.path.exists(yolo_images_dir):
-            for img_name in os.listdir(yolo_images_dir):
-                if img_name.lower().endswith(VALID_IMAGE_EXTENSIONS):
-                    img_path = os.path.join(yolo_images_dir, img_name)
-                    base_name = os.path.splitext(img_name)[0]
-                    txt_path = os.path.join(yolo_labels_dir, base_name + ".txt") if os.path.exists(yolo_labels_dir) else ""
+        for root, _, files in os.walk(self.bb_label_dir):
+            for f in files:
+                if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
+                    img_path = os.path.join(root, f)
+                    base_name = os.path.splitext(f)[0]
                     
+                    txt_path = os.path.join(root, base_name + ".txt")
+                    if not os.path.exists(txt_path) and "/images" in root:
+                        labels_root = root.replace("/images", "/labels")
+                        txt_path = os.path.join(labels_root, base_name + ".txt")
+                        
                     bboxes = parse_yolo_txt(txt_path)
                     self.samples.append((img_path, bboxes, 0))
-                    
-        # 2. Parse darknet/ (images and label .txt files in the SAME folder)
-        darknet_dir = os.path.join(self.bb_label_dir, "darknet")
-        if os.path.exists(darknet_dir):
-            for root, _, files in os.walk(darknet_dir):
-                for f in files:
-                    if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
-                        img_path = os.path.join(root, f)
-                        base_name = os.path.splitext(f)[0]
-                        txt_path = os.path.join(root, base_name + ".txt")
-                        
-                        bboxes = parse_yolo_txt(txt_path)
-                        self.samples.append((img_path, bboxes, 0))
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path, bboxes, class_id = self.samples[idx]
-        
+        path, bboxes, class_id = self.samples[idx % len(self.samples)]
         if path == "dummy_bb":
             img_tensor = torch.randn(3, *self.image_size)
             return img_tensor, class_id, True
@@ -258,7 +271,6 @@ class BoundingBoxFaceDataset(data.Dataset):
             img = Image.open(path).convert('RGB')
             w_img, h_img = img.size
             
-            # Crop using first valid bounding box if available
             if bboxes and len(bboxes) > 0:
                 xc, yc, w_box, h_box = bboxes[0]
                 x1 = max(0, int((xc - w_box / 2.0) * w_img))
@@ -278,12 +290,7 @@ class BoundingBoxFaceDataset(data.Dataset):
 
 class UnifiedWildFaceDataset(data.Dataset):
     """
-    Unified Production Dataset Loader combining:
-    - unlabeled/ (UnlabeledWildDataset)
-    - name_label/ (NameLabeledFaceDataset: ROF, face_with_mask, face_detection_in_wild_dataset)
-    - bb_label/ (BoundingBoxFaceDataset: facemaskyolo, darknet)
-    
-    Automatically routes images and returns (img_tensor, label_idx, is_labeled).
+    Unified Dynamic Dataset Loader combining all datastreams with automatic epoch-wise rescanning.
     """
     def __init__(self, root_dir: str = None, meta_file: str = None, is_labeled: bool = True, transform=None, is_train: bool = True, image_size=(112, 112)):
         super(UnifiedWildFaceDataset, self).__init__()
@@ -308,6 +315,16 @@ class UnifiedWildFaceDataset(data.Dataset):
         
         self.class_to_idx = self.name_labeled_ds.class_to_idx
 
+    def rescan(self):
+        """
+        Rescans all sub-datasets to pick up newly arrived parallel file uploads.
+        """
+        n_unlabeled = self.unlabeled_ds.rescan()
+        n_name = self.name_labeled_ds.rescan()
+        n_bb = self.bb_labeled_ds.rescan()
+        self.class_to_idx = self.name_labeled_ds.class_to_idx
+        return n_unlabeled + n_name + n_bb
+
     def __len__(self):
         return len(self.unlabeled_ds) + len(self.name_labeled_ds) + len(self.bb_labeled_ds)
 
@@ -329,25 +346,16 @@ class UnifiedWildFaceDataset(data.Dataset):
             return self.bb_labeled_ds[idx - len_unlabeled - len_name]
 
 
-# Backwards compatibility Aliases across codebase
 RobustUniversalFaceDataset = UnifiedWildFaceDataset
 WildFaceDataset = NameLabeledFaceDataset
 UnlabeledFaceDataset = UnlabeledWildDataset
 
 class CelebAAttributeDataset(data.Dataset):
-    """
-    Dataset loader for CelebA multi-task 40-attribute training.
-    """
     def __init__(self, root_dir: str = None, attr_file: str = None, is_train: bool = True, image_size=(112, 112)):
         super(CelebAAttributeDataset, self).__init__()
         self.root_dir = root_dir
         self.is_train = is_train
-        
-        self.transform = transforms.Compose([
-            transforms.Resize(image_size),
-            transforms.ToTensor(),
-            transforms.Normalize(mean=[0.5, 0.5, 0.5], std=[0.5, 0.5, 0.5])
-        ])
+        self.transform = get_default_transform(image_size, is_train)
         
         self.samples = []
         if root_dir and attr_file and os.path.exists(attr_file):
@@ -366,7 +374,7 @@ class CelebAAttributeDataset(data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path, attr_targets = self.samples[idx]
+        path, attr_targets = self.samples[idx % len(self.samples)]
         if path == "dummy_attr":
             img_tensor = torch.randn(3, 112, 112)
         else:

@@ -67,6 +67,10 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device):
     curricular_loss_fn.train()
     
     for epoch in range(1, cfg.train.epochs + 1):
+        # Dynamically rescan dataset to index new images uploaded in parallel
+        if hasattr(train_dataset, "rescan"):
+            total_samples = train_dataset.rescan()
+            
         running_loss = 0.0
         for step, batch in enumerate(train_loader):
             images, labels, _ = batch # batch returns (images, labels, is_labeled)
@@ -161,6 +165,9 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
     
     backbone.eval()
     for epoch in range(1, min(cfg.train.epochs, 3) + 1):
+        if hasattr(unlabeled_dataset, "rescan"):
+            unlabeled_dataset.rescan()
+            
         total_clustered = 0
         for images, labels, is_labeled in unlabeled_loader:
             images = images.to(device)
