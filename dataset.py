@@ -92,11 +92,14 @@ class UnlabeledWildDataset(data.Dataset):
     def rescan(self):
         """
         Dynamically rescans the unlabeled directory to index newly arrived images uploaded in parallel.
+        Excludes bounding-box datasets (e.g., masked-face-detection-wider-dataset) handled by BoundingBoxFaceDataset.
         """
         prev_count = len(self.samples)
         self.samples = []
         if self.unlabeled_dir and os.path.exists(self.unlabeled_dir):
             for root, _, files in os.walk(self.unlabeled_dir):
+                if "masked-face-detection-wider-dataset" in root.lower():
+                    continue
                 for f in files:
                     if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                         self.samples.append(os.path.join(root, f))
@@ -246,19 +249,29 @@ class BoundingBoxFaceDataset(data.Dataset):
         return len(self.samples)
 
     def _parse_bb_label_directory(self):
-        for root, _, files in os.walk(self.bb_label_dir):
-            for f in files:
-                if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
-                    img_path = os.path.join(root, f)
-                    base_name = os.path.splitext(f)[0]
-                    
-                    txt_path = os.path.join(root, base_name + ".txt")
-                    if not os.path.exists(txt_path) and "/images" in root:
-                        labels_root = root.replace("/images", "/labels")
-                        txt_path = os.path.join(labels_root, base_name + ".txt")
-                        
-                    bboxes = parse_yolo_txt(txt_path)
-                    self.samples.append((img_path, bboxes, 0))
+        search_dirs = []
+        if self.bb_label_dir and os.path.exists(self.bb_label_dir):
+            search_dirs.append(self.bb_label_dir)
+            parent_dir = os.path.dirname(self.bb_label_dir.rstrip('/'))
+            wider_cand = os.path.join(parent_dir, "unlabeled", "masked-face-detection-wider-dataset")
+            if os.path.exists(wider_cand) and wider_cand not in search_dirs:
+                search_dirs.append(wider_cand)
+
+        for sdir in search_dirs:
+            if sdir and os.path.exists(sdir):
+                for root, _, files in os.walk(sdir):
+                    for f in files:
+                        if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
+                            img_path = os.path.join(root, f)
+                            base_name = os.path.splitext(f)[0]
+                            
+                            txt_path = os.path.join(root, base_name + ".txt")
+                            if not os.path.exists(txt_path) and "/images" in root:
+                                labels_root = root.replace("/images", "/labels")
+                                txt_path = os.path.join(labels_root, base_name + ".txt")
+                                
+                            bboxes = parse_yolo_txt(txt_path)
+                            self.samples.append((img_path, bboxes, 0))
 
     def __len__(self):
         return len(self.samples)
