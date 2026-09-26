@@ -18,7 +18,8 @@ cd $PBS_O_WORKDIR || cd $HOME/Face_Detection_In_Wild
 
 # Enable unbuffered Python logging & NCCL environment settings
 export PYTHONUNBUFFERED=1
-export NCCL_ASYNC_ERROR_HANDLING=1
+export PYTHONWARNINGS="ignore"
+export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
 export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
 
@@ -49,7 +50,7 @@ $HOME/miniforge3/envs/venv_gpu/bin/torchrun --nproc_per_node=$NUM_GPUS train.py 
     --checkpoint_dir "$HOME/Face_Detection_In_Wild/weights" \
     --backbone iresnet100 \
     --batch_size 32 \
-    --epochs 25 \
+    --epochs 100 \
     --lr 0.1 \
     --fp16 2>&1 | tee -a "$HOME/Face_Detection_In_Wild/train_aqua_live.log"
 

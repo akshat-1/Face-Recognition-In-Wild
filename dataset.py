@@ -1,6 +1,8 @@
 import os
 import re
 import glob
+import warnings
+warnings.filterwarnings("ignore")
 from PIL import Image
 import torch
 import torch.utils.data as data
@@ -28,8 +30,8 @@ class PurePyTorchImageTransform:
         if self.is_train and torch.rand(1).item() > 0.5:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
             
-        img_bytes = img.tobytes()
-        tensor = torch.frombuffer(img_bytes, dtype=torch.uint8).clone()
+        img_bytes = bytearray(img.tobytes())
+        tensor = torch.frombuffer(img_bytes, dtype=torch.uint8)
         tensor = tensor.view(self.image_size[1], self.image_size[0], 3).permute(2, 0, 1).float() / 255.0
         tensor = (tensor - 0.5) / 0.5
         return tensor
