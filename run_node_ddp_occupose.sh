@@ -7,7 +7,7 @@ export GLOO_SOCKET_FAMILY=AF_INET
 export GLOO_SOCKET_IFNAME=ib0,eth0,ens,enp
 export NCCL_SOCKET_IFNAME=ib0,eth0,ens,enp
 export NCCL_IB_DISABLE=0
-export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
 
 source /lfs/usrhome/btech/na22b025/miniforge3/bin/activate
 conda activate venv_gpu
