@@ -20,7 +20,7 @@ cd $PBS_O_WORKDIR || cd $HOME/Face_Detection_In_Wild
 export PYTHONUNBUFFERED=1
 export NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
-export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
 
 mkdir -p $HOME/Face_Detection_In_Wild/weights
 
