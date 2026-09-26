@@ -29,7 +29,7 @@ class PurePyTorchImageTransform:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
             
         img_bytes = img.tobytes()
-        tensor = torch.frombuffer(img_bytes, dtype=torch.uint8)
+        tensor = torch.frombuffer(img_bytes, dtype=torch.uint8).clone()
         tensor = tensor.view(self.image_size[1], self.image_size[0], 3).permute(2, 0, 1).float() / 255.0
         tensor = (tensor - 0.5) / 0.5
         return tensor
