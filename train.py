@@ -104,7 +104,7 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
                 print(f"Warning: Failed to load checkpoint {latest_ckpt}: {e}. Starting fresh.")
 
     if is_ddp and device.type == 'cuda':
-        backbone = nn.parallel.DistributedDataParallel(backbone, device_ids=[local_rank], output_device=local_rank)
+        backbone = nn.parallel.DistributedDataParallel(backbone, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
     
     optimizer = optim.SGD(
         list(backbone.parameters()) + list(broadface_loss_fn.parameters()),
@@ -200,7 +200,7 @@ def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp
     
     anet = ANetAttributeParser(num_attributes=40).to(device)
     if is_ddp and device.type == 'cuda':
-        anet = nn.parallel.DistributedDataParallel(anet, device_ids=[local_rank], output_device=local_rank)
+        anet = nn.parallel.DistributedDataParallel(anet, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
         
     criterion_bce = nn.BCEWithLogitsLoss()
     optimizer = optim.Adam(anet.parameters(), lr=1e-3, weight_decay=1e-4)
@@ -255,7 +255,7 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
     
     gcn_predictor = GCNLinkPredictor(feature_dim=cfg.model.embedding_dim, hidden_dim=256, k_neighbors=5).to(device)
     if is_ddp and device.type == 'cuda':
-        gcn_predictor = nn.parallel.DistributedDataParallel(gcn_predictor, device_ids=[local_rank], output_device=local_rank)
+        gcn_predictor = nn.parallel.DistributedDataParallel(gcn_predictor, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
         
     optimizer_gcn = optim.Adam(gcn_predictor.parameters(), lr=1e-3)
     
