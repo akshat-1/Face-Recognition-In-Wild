@@ -80,21 +80,42 @@ fi
 
 echo "⚡ [OccuPose Unit Rank $NODE_RANK / $NNODES] Launching $NUM_GPUS-GPU torchrun on $HOSTNAME_SHORT (Master IPv4: $MASTER_ADDR:$MASTER_PORT)..."
 
-/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
-  --nnodes=$NNODES \
-  --nproc_per_node=$NUM_GPUS \
-  --node_rank=$NODE_RANK \
-  --master_addr=$MASTER_ADDR \
-  --master_port=$MASTER_PORT \
-  /lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py \
-  --data_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/name_label" \
-  --unlabeled_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled" \
-  --celeba_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/celeba" \
-  --checkpoint_dir "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/weights" \
-  --backbone iresnet100 \
-  --batch_size 32 \
-  --epochs 100 \
-  --resume \
-  --retrain_phase2 \
-  --lr 0.1 \
-  --fp16 2>&1 | tee -a "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_aqua_live.log"
+if [ "$NODE_RANK" -eq 0 ]; then
+    /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
+      --nnodes=$NNODES \
+      --nproc_per_node=$NUM_GPUS \
+      --node_rank=$NODE_RANK \
+      --master_addr=$MASTER_ADDR \
+      --master_port=$MASTER_PORT \
+      /lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py \
+      --data_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/name_label" \
+      --unlabeled_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled" \
+      --celeba_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/celeba" \
+      --checkpoint_dir "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/weights" \
+      --backbone iresnet100 \
+      --batch_size 32 \
+      --epochs 100 \
+      --resume \
+      --retrain_phase2 \
+      --lr 0.1 \
+      --fp16 2>&1 | tee -a "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_aqua_live.log"
+else
+    /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
+      --nnodes=$NNODES \
+      --nproc_per_node=$NUM_GPUS \
+      --node_rank=$NODE_RANK \
+      --master_addr=$MASTER_ADDR \
+      --master_port=$MASTER_PORT \
+      /lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py \
+      --data_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/name_label" \
+      --unlabeled_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled" \
+      --celeba_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/celeba" \
+      --checkpoint_dir "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/weights" \
+      --backbone iresnet100 \
+      --batch_size 32 \
+      --epochs 100 \
+      --resume \
+      --retrain_phase2 \
+      --lr 0.1 \
+      --fp16 > "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_node_1.log" 2>&1
+fi
