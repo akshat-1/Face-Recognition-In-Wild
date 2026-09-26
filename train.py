@@ -87,13 +87,17 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
     ).to(device)
     
     # Check if completed Phase 1 pretrained checkpoint exists
-    phase1_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase1_backbone_curricular.pt")
+    phase1_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase1_epoch_100.pt")
+    if not os.path.exists(phase1_ckpt):
+        phase1_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase1_backbone_curricular.pt")
+        
     if os.path.exists(phase1_ckpt):
         try:
             ckpt_data = torch.load(phase1_ckpt, map_location=device)
             backbone.load_state_dict(ckpt_data['backbone'])
+            saved_epoch = ckpt_data.get('epoch', 100)
             if rank == 0:
-                print(f"\n[Phase 1 Pretrained] Loaded 100-epoch trained backbone weights from {phase1_ckpt}. Skipping Phase 1 training!\n")
+                print(f"\n[Phase 1 Pretrained] Loaded {saved_epoch}-epoch trained backbone weights from {phase1_ckpt}. Skipping Phase 1 training!\n", flush=True)
             return backbone, num_classes
         except Exception as e:
             if rank == 0:
