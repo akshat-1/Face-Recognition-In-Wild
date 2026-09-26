@@ -139,7 +139,20 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
             optimizer.zero_grad()
             with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
                 embeddings = backbone(images)
-                loss = curricular_loss_fn(embeddings, labels)
+                loss_batch = curricular_loss_fn(embeddings, labels)
+                
+                # Official BroadFace Queue Loss over past compensated embeddings
+                if broadface_queue.is_full[0] or broadface_queue.queue_ptr[0] > 128:
+                    q_embeds, q_labels = broadface_queue.get_queue_samples()
+                    if q_embeds.size(0) > 4096:
+                        perm_idx = torch.randperm(q_embeds.size(0), device=device)[:4096]
+                        q_embeds_sub, q_labels_sub = q_embeds[perm_idx], q_labels[perm_idx]
+                    else:
+                        q_embeds_sub, q_labels_sub = q_embeds, q_labels
+                    loss_queue = curricular_loss_fn(q_embeds_sub, q_labels_sub)
+                    loss = loss_batch + 0.5 * loss_queue
+                else:
+                    loss = loss_batch
                 
             scaler.scale(loss).backward()
             with torch.no_grad():
