@@ -125,7 +125,16 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
             sampler.set_epoch(epoch)
             
         if hasattr(train_dataset, "rescan"):
-            total_samples = train_dataset.rescan()
+            new_count = train_dataset.rescan()
+            if is_ddp:
+                sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+                train_loader = DataLoader(
+                    train_dataset,
+                    batch_size=cfg.train.batch_size,
+                    sampler=sampler,
+                    num_workers=cfg.dataset.num_workers,
+                    pin_memory=True
+                )
             
         running_loss = 0.0
         for step, batch in enumerate(train_loader):
