@@ -49,6 +49,7 @@ class BroadFaceCurricularLoss(nn.Module):
 
     @torch.no_grad()
     def update(self, input_tensor: torch.Tensor, label: torch.Tensor):
+        label = torch.clamp(label.long(), 0, self.num_classes - 1)
         self.feature_mb = torch.cat([self.feature_mb, input_tensor.detach()], dim=0)
         self.label_mb = torch.cat([self.label_mb, label.detach()], dim=0)
         self.proxy_mb = torch.cat(
@@ -62,6 +63,7 @@ class BroadFaceCurricularLoss(nn.Module):
             self.proxy_mb = self.proxy_mb[over_size:]
 
     def compute_curricular(self, x: torch.Tensor, y: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
+        y = torch.clamp(y.long(), 0, self.num_classes - 1)
         norm_embeddings = F.normalize(x.float(), p=2, dim=1)
         norm_weight = F.normalize(w.float(), p=2, dim=1)
         

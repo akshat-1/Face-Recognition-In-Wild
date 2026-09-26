@@ -51,6 +51,7 @@ $HOME/miniforge3/envs/venv_gpu/bin/torchrun --nproc_per_node=$NUM_GPUS train.py 
     --backbone iresnet100 \
     --batch_size 32 \
     --epochs 100 \
+    --resume \
     --lr 0.1 \
     --fp16 2>&1 | tee -a "$HOME/Face_Detection_In_Wild/train_aqua_live.log"
 
