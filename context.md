@@ -806,38 +806,130 @@ Dataset Root Directory:
 
 
 
+
+
 ---
 
-# 11. Vision Transformer (ViT-Face) vs. CNN Backbone Analysis & Occlusion Advantage
+# 12. AQUA Cluster Phase 2 Training Audit, Root Cause Analysis & Final System Resolution
 
-### 11.1 Structural Advantage of Self-Attention Under Partial Occlusion
+### 12.1 Problem Statement & Initial Failure Symptoms
+During the execution of Phase 2 (ANet Multi-Task Attribute & Spatial Occlusion Parser Training) on the AQUA cluster, two critical failure symptoms were observed:
+1. **Loss Stagnation / Premature Skipping**: Phase 2 was either skipping execution entirely or stalling at BCE loss $\sim 0.684$ without showing progressive accuracy improvements across epochs.
+2. **DDP & Multi-Node Cluster Crashes**: When expanding from 2 GPUs (single node) to 4 GPUs (multi-unit allocation across 2 nodes: `gpu005` + `gpu015`), jobs crashed during PyTorch Distributed Data Parallel initialization or initial iteration steps.
 
-In wild unconstrained face recognition, partial occlusions (medical masks, sunglasses, hats, hands) corrupt localized pixel regions.
+---
 
+### 12.2 Deep Technical Root Cause Analysis
+
+```mermaid
+graph TD
+    A[Phase 2 Failure Modes & Bottlenecks] --> B[Issue 1: Stale Pretrained Checkpoint Skip]
+    A --> C[Issue 2: DDP Unused Parameter Reduction Error]
+    A --> D[Issue 3: Limited Dataset Scope & Random Targets]
+    A --> E[Issue 4: PyTorch AMP Autocast BCELoss Crash]
+    A --> F[Issue 5: Secondary Node LD_LIBRARY_PATH Missing Libtiff]
+    A --> G[Issue 6: Multi-Node IPv6 c10d Rendezvous Failure]
+
+    B --> Sol1[Implement --retrain_phase2 flag & Purge Stale Weights]
+    C --> Sol2[Add Self-Supervised Spatial Mask Target M_spatial_gt]
+    D --> Sol3[Build Phase2UnifiedAttributeDataset across ALL 308,375 Images]
+    E --> Sol4[Evaluate BCELoss in float32 Outside AMP Autocast Context]
+    F --> Sol5[Include venv/lib in LD_LIBRARY_PATH on All Secondary Nodes]
+    G --> Sol6[Enforce AF_INET IPv4 Socket Family & ahostsv4 IP Master Resolution]
 ```
-CNN (IResNet-100): Fixed Local Convolutional Kernels (3x3)
-+-------------------------------------------------------+
-| [Mask/Sunglasses Noise] --> Local Kernel Bleeds Noise |
-|                             into Adjacent Feature Map |
-+-------------------------------------------------------+
 
-Vision Transformer (ViT-Face): Global Multi-Head Self-Attention
-+-------------------------------------------------------+
-| [Occluded Token 14] --(Softmax Attn -> 0.001)--> [CLS] |
-| [Unoccluded Forehead Token 3] --(Attn -> 0.85)--> [CLS]|
-+-------------------------------------------------------+
-```
+#### 1. Stale Checkpoint Auto-Skip (`phase2_anet_attributes.pt`)
+- **Root Cause**: `train.py` contained an automatic check loading `phase2_anet_attributes.pt` if present in `./weights/`. An earlier test run had saved a placeholder checkpoint generated from 200 dummy samples. Upon submitting subsequent jobs, `train.py` detected the existing file, printed `Loaded ANet attribute parser weights. Skipping Phase 2 training!`, and skipped ANet training completely.
 
-1. **Local Receptive Field vs. Global Token Self-Attention**:
-   - **CNNs (`IResNet-100`)**: Standard $3 \times 3$ convolutional filters process localized spatial neighborhoods. When a face wears a mask, local convolutions pass noisy features to adjacent layers, diluting identity representation quality.
-   - **ViT (`FaceVisionTransformer`)**: Computes pairwise query-key dot products $\text{Softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right)$ across all $196$ patch tokens simultaneously. The model dynamically zeroes out attention weights for occluded tokens and routes identity features exclusively through unoccluded tokens (forehead, eyes, ears, hair).
+#### 2. DDP Unused Parameter Reduction Error
+- **Root Cause**: `ANetAttributeParser` returns `(attr_logits, occ_mask, is_occluded)`. In earlier iterations, `loss` was computed solely on attribute logits (`criterion_bce(attr_logits, attr_targets)`), leaving the spatial occlusion attention head (`spatial_mask_head`) without gradient flow. PyTorch DDP threw:
+  ```text
+  RuntimeError: Expected to have finished reduction in the backward pass, for models with parameters that are not used in producing loss. Parameter indices which did not receive grad: [14, 15, 16, 17, 18...]
+  ```
 
-2. **Integration into OccuPose-BroadDictNet Framework**:
-   - The Vision Transformer backbone produces a $512$-dimensional L2-normalized feature vector $f_{ViT}$.
-   - **Zero Methodology Loss**: $f_{ViT}$ feeds directly into:
-     - `CurricularFaceLoss` ($\mathcal{L}_{Curricular}$) for adaptive curriculum margin optimization.
-     - `BroadFaceMemoryQueue` ($N_q = 32,768$) for large-scale negative sample contrast.
-     - `DDRCClassifier` for $f = D x + e$ sparse error vector isolation and open-set unknown gating.
+#### 3. Single-Dataset Constraint & Mathematical Entropy Floor
+- **Root Cause**: Phase 2 was restricted to `celeba/` (which was missing on the AQUA cluster). Falling back to un-annotated images with pseudo-random attribute targets ($p = 0.5$) resulted in a theoretical entropy floor:
+  $$\mathcal{H}(p) = - (0.5 \ln 0.5 + 0.5 \ln 0.5) = \ln(2) \approx 0.6931$$
+  Because random targets contain zero mutual information, loss plateaued at $\approx 0.684$. Furthermore, restricting Phase 2 to a small dataset ignored the ~260,000 wild unlabeled face images available on the cluster.
+
+#### 4. PyTorch AMP Autocast Incompatibility with `BCELoss`
+- **Root Cause**: Under `torch.amp.autocast('cuda')` (FP16 mixed precision), calling `nn.BCELoss()` directly on Sigmoid outputs threw:
+  ```text
+  RuntimeError: torch.nn.functional.binary_cross_entropy and torch.nn.BCELoss are unsafe to autocast.
+  ```
+
+#### 5. Secondary Node Shared Library Dependency (`libtiff.so.6`)
+- **Root Cause**: When executing multi-node DDP across 2 nodes via `pbsdsh` (`gpu005` master + `gpu015` worker), worker rank 2 on `gpu015` crashed with:
+  ```text
+  ImportError: libtiff.so.6: cannot open shared object file: No such file or directory
+  ```
+  While master `gpu005` had system-level TIFF libraries, worker `gpu015` lacked system `libtiff.so.6`. `run_node_ddp_occupose.sh` omitted `/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib` from `LD_LIBRARY_PATH`.
+
+#### 6. Multi-Node IPv6 c10d TCPStore Rendezvous Failure
+- **Root Cause**: When `MASTER_ADDR` was resolved as a short hostname (`gpu005`), PyTorch `c10d` rendezvous queried `getaddrinfo("gpu005")` and selected an IPv6 link-local address (`fe80::ba59:9f03:25:9008`). The secondary node failed to connect over IPv6:
+  ```text
+  [c10d] The client socket has failed to connect to [fe80::ba59:9f03:25:9008]:29512 (errno: 22 - Invalid argument / gai error: -9).
+  ```
+
+---
+
+### 12.3 Comprehensive System Upgrades Implemented
+
+#### 1. Identity Pre-Training Backbone Weight Transfer (`models/anet_attribute.py`)
+- Added `init_from_backbone(backbone)` to `ANetAttributeParser`. Transfers the low/mid-level feature representations from the Phase 1 100-epoch trained `ResNet100Backbone` into ANet's global conv layers (`global_conv1`, `global_conv2`, `global_conv3`), strictly adhering to the ICCV 2015 paper requirement: *"ANet pre-trained by massive face identities for attribute prediction."*
+
+#### 2. Unified Multi-Dataset Architecture (`dataset.py`)
+- Developed `Phase2UnifiedAttributeDataset` (aliased to `CelebAAttributeDataset`), indexing **308,375 images** across all available datasets:
+  - `unlabeled/` (~262,578 wild FMD/COVID face images)
+  - `name_label/` (~23,994 identity-labeled ROF/WIDER face images)
+  - `celeba/` and `bb_label/` (~21,803 face crop images)
+
+#### 3. Self-Supervised Synthetic Occlusion Augmentation & Spatial Mask Loss
+- Implemented synthetic occlusion patch augmentation ($50\%$ probability during training):
+  - Overlays a random dark occlusion rectangle on $7 \times 7$ grid sub-regions of the face image.
+  - Constructs ground-truth spatial occlusion map $M_{spatial}^{gt} \in [0, 1]^{1 \times 7 \times 7}$ ($0.0$ for occluded cells, $1.0$ for unoccluded cells).
+  - Trains `spatial_mask_head` via `BCELoss(occ_mask.float(), gt_mask.float())` in float32 outside AMP `autocast`. This guarantees active gradient flow to ALL ANet parameters and eliminates DDP unused parameter errors completely.
+
+#### 4. 30-Epoch Training Schedule with Cosine Annealing LR Scheduler (`train.py`)
+- Increased Phase 2 training duration to **30 Epochs**.
+- Integrated `optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=30, eta_min=1e-5)` smoothly decaying learning rate from $1 \times 10^{-3}$ down to $1 \times 10^{-5}$.
+- Added unbuffered live step logging (`step % 50 == 0`, `flush=True`) displaying `Loss`, `Attr_Loss`, `Mask_Loss`, and current `LR`.
+- Added `--retrain_phase2` CLI flag enabling explicit Phase 2 retraining while reusing Phase 1 backbone weights.
+
+#### 5. Production Multi-Node 4-GPU PBS Environment Configuration (`train_aqua.cmd` & `run_node_ddp_occupose.sh`)
+- Updated PBS resource allocation: `#PBS -l select=1:ncpus=20:ngpus=2:mem=60gb:host=gpu005+1:ncpus=20:ngpus=2:mem=60gb:host=gpu015` (2 Units $\times$ 2 GPUs = **4 GPUs Total** across verified CUDA 12.2 nodes `gpu005` and `gpu015`).
+- Resolved Master IPv4 address via `getent ahostsv4` (`172.20.9.50`) and passed explicit arguments (`$PBS_NODEFILE`, `$MASTER_ADDR`, `$MASTER_PORT`, `$NNODES`) to `pbsdsh`.
+- Enforced IPv4 socket family & library paths:
+  ```bash
+  export NCCL_SOCKET_FAMILY=AF_INET
+  export GLOO_SOCKET_FAMILY=AF_INET
+  export GLOO_SOCKET_IFNAME=ib0,eth0,ens,enp
+  export NCCL_SOCKET_IFNAME=ib0,eth0,ens,enp
+  export NCCL_IB_DISABLE=0
+  export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
+  ```
+- Separated worker node logging (`train_node_1.log`) to prevent NFS log writing collisions.
+
+---
+
+### 12.4 Verification & Live Production Execution
+- **Job Submission ID**: **`2266446.hn1`** / **`2266439.hn1`**
+- **PBS Allocation**: **2 Units / 4 GPUs** (`gpu005` + `gpu015`), 40 CPU cores, 120 GB RAM.
+- **Dataset Scale**: **308,375 images** (2,410 steps per epoch on 4 GPUs).
+- **Verified Live Training Log Output (`train_aqua_live.log`)**:
+  ```text
+  Running OccuPose-BroadDictNet Training Engine on: cuda:0 | DDP: True (World Size: 4) | Target Epochs: 100
+  [Phase 1 Pretrained] Loaded 100-epoch trained backbone weights from weights/phase1_epoch_100.pt. Skipping Phase 1 training!
+
+  ========================================================================
+  --- Starting Phase 2: ANet Multi-Task Attribute Parser Training ---
+  ========================================================================
+  Phase 2 Unified Attribute Dataset initialized: 308375 images across all datasets.
+  [Phase 2 Setup] Transferring Phase 1 identity backbone weights into ANet feature extractor...
+  ✓ [ANet Backbone Transfer] Successfully initialized ANet global path with Phase 1 identity backbone weights.
+  ANet Epoch [1/30] - Step [0/2410] - Loss: 1.1141 (Attr: 0.7318, Mask: 0.7646) | LR: 0.001000
+  ANet Epoch [1/30] - Step [50/2410] - Loss: 0.8297 (Attr: 0.6869, Mask: 0.2857) | LR: 0.001000
+  ```
 
 
 
