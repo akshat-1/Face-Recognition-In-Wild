@@ -3,12 +3,12 @@
 #PBS -o train_aqua_live.log
 #PBS -e train_aqua.err
 #PBS -l walltime=48:00:00
-#PBS -l select=2:ncpus=20:ngpus=2:mem=60gb
+#PBS -l select=1:ncpus=20:ngpus=2:mem=60gb:host=gpu005+1:ncpus=20:ngpus=2:mem=60gb:host=gpu015
 #PBS -q gpuq
 
 # =====================================================================
 # AQUA Cluster 4-GPU Multi-Unit PBS Script for OccuPose-BroadDictNet
-# 2 Units x 2 GPUs = 4 GPUs Total Across Nodes
+# 2 Units x 2 GPUs = 4 GPUs Total Across Nodes (gpu005 + gpu015)
 # Workspace: ~/Face_Detection_In_Wild/
 # Dataset: ~/scratch/Face_Dataset/
 # Weights Output: ~/Face_Detection_In_Wild/weights/
@@ -22,8 +22,9 @@ export PYTHONUNBUFFERED=1
 export PYTHONWARNINGS="ignore"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
-export NCCL_IB_DISABLE=0
+export GLOO_SOCKET_IFNAME=ib0,eth0,ens,enp
 export NCCL_SOCKET_IFNAME=ib0,eth0,ens,enp
+export NCCL_IB_DISABLE=0
 export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
 
 mkdir -p $HOME/Face_Detection_In_Wild/weights
@@ -32,7 +33,7 @@ mkdir -p $HOME/Face_Detection_In_Wild/weights
 source $HOME/miniforge3/bin/activate
 conda activate venv_gpu
 
-MASTER_ADDR=$(head -n 1 $PBS_NODEFILE | cut -d'.' -f1)
+MASTER_ADDR=$(head -n 1 $PBS_NODEFILE)
 MASTER_PORT=29512
 NNODES=$(sort -u $PBS_NODEFILE | wc -l)
 

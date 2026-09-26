@@ -2,8 +2,9 @@
 export PYTHONUNBUFFERED=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
-export NCCL_IB_DISABLE=0
+export GLOO_SOCKET_IFNAME=ib0,eth0,ens,enp
 export NCCL_SOCKET_IFNAME=ib0,eth0,ens,enp
+export NCCL_IB_DISABLE=0
 export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
 
 source /lfs/usrhome/btech/na22b025/miniforge3/bin/activate
@@ -19,10 +20,10 @@ if [ -z "$PBS_NODEFILE" ]; then
 fi
 
 if [ -f "$PBS_NODEFILE" ]; then
-    MASTER_ADDR=$(head -n 1 $PBS_NODEFILE | cut -d'.' -f1)
+    MASTER_ADDR=$(head -n 1 $PBS_NODEFILE)
     NNODES=$(sort -u $PBS_NODEFILE | wc -l)
 else
-    MASTER_ADDR=$(hostname | cut -d'.' -f1)
+    MASTER_ADDR=$(hostname)
     NNODES=1
 fi
 
@@ -35,8 +36,8 @@ if [ -n "$PBS_VNODENUM" ]; then
 elif [ -n "$PBS_NODENUM" ]; then
     NODE_RANK=$PBS_NODENUM
 elif [ -f "$PBS_NODEFILE" ]; then
-    HOSTNAME_SHORT=$(hostname | cut -d'.' -f1)
-    UNIQUE_NODES=($(sort -u $PBS_NODEFILE | cut -d'.' -f1))
+    HOSTNAME_SHORT=$(hostname)
+    UNIQUE_NODES=($(sort -u $PBS_NODEFILE))
     for idx in "${!UNIQUE_NODES[@]}"; do
         if [ "${UNIQUE_NODES[$idx]}" == "$HOSTNAME_SHORT" ]; then
             NODE_RANK=$idx
@@ -89,5 +90,5 @@ else
       --resume \
       --retrain_phase2 \
       --lr 0.1 \
-      --fp16
+      --fp16 2>&1 | tee -a "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_aqua_live.log"
 fi
