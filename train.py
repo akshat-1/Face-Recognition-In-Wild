@@ -148,8 +148,8 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
         if rank == 0:
             print(f"Epoch [{epoch}/{cfg.train.epochs}] - BroadFace Curricular Loss: {avg_loss:.4f} | EMA t: {t_param:.4f}")
             
-            # Periodic checkpointing every 5 epochs
-            if epoch % 5 == 0 or epoch == cfg.train.epochs:
+            # Periodic checkpointing every 10 epochs
+            if epoch % 10 == 0 or epoch == cfg.train.epochs:
                 backbone_state = backbone.module.state_dict() if hasattr(backbone, 'module') else backbone.state_dict()
                 save_dict = {
                     'epoch': epoch,
