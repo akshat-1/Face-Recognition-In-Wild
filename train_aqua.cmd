@@ -36,7 +36,7 @@ source $HOME/miniforge3/bin/activate
 conda activate venv_gpu
 
 MASTER_NODE_SHORT=$(head -n 1 $PBS_NODEFILE | cut -d'.' -f1)
-MASTER_ADDR=$(getent hosts $MASTER_NODE_SHORT | awk '{print $1}')
+MASTER_ADDR=$(getent ahostsv4 $MASTER_NODE_SHORT | head -n 1 | awk '{print $1}')
 if [ -z "$MASTER_ADDR" ]; then
     MASTER_ADDR=$MASTER_NODE_SHORT
 fi
@@ -46,7 +46,7 @@ NNODES=$(sort -u $PBS_NODEFILE | wc -l)
 echo "=========================================================="
 echo "Starting OccuPose-BroadDictNet 4-GPU Training on AQUA Cluster"
 echo "Date: $(date)"
-echo "Master IP: $MASTER_ADDR (Port: $MASTER_PORT)"
+echo "Master IPv4: $MASTER_ADDR (Port: $MASTER_PORT)"
 echo "Total Allocated Units (Nodes): $NNODES"
 echo "Allocated Nodes List:"
 cat $PBS_NODEFILE | sort -u
@@ -56,7 +56,7 @@ export MASTER_ADDR=$MASTER_ADDR
 export MASTER_PORT=$MASTER_PORT
 export NNODES=$NNODES
 
-# Launch multi-node 4-GPU PyTorch DDP via pbsdsh with explicit IPv4 parameters
+# Launch multi-node 4-GPU PyTorch DDP via pbsdsh with explicit IPv4 master IP
 pbsdsh -v $HOME/Face_Detection_In_Wild/run_node_ddp_occupose.sh "$PBS_NODEFILE" "$MASTER_ADDR" "$MASTER_PORT" "$NNODES" 2>&1 | tee -a "$HOME/Face_Detection_In_Wild/train_aqua_live.log"
 
 echo "Training job completed at $(date)"

@@ -34,7 +34,7 @@ if [ -n "$ARG_MASTER" ]; then
     MASTER_ADDR="$ARG_MASTER"
 elif [ -f "$PBS_NODEFILE" ]; then
     MASTER_NODE_SHORT=$(head -n 1 $PBS_NODEFILE | cut -d'.' -f1)
-    MASTER_ADDR=$(getent hosts $MASTER_NODE_SHORT | awk '{print $1}')
+    MASTER_ADDR=$(getent ahostsv4 $MASTER_NODE_SHORT | head -n 1 | awk '{print $1}')
     if [ -z "$MASTER_ADDR" ]; then
         MASTER_ADDR=$MASTER_NODE_SHORT
     fi
@@ -78,7 +78,7 @@ if [ "$NUM_GPUS" -eq 0 ]; then
     NUM_GPUS=2
 fi
 
-echo "⚡ [OccuPose Unit Rank $NODE_RANK / $NNODES] Launching $NUM_GPUS-GPU torchrun on $HOSTNAME_SHORT (Master IP: $MASTER_ADDR:$MASTER_PORT)..."
+echo "⚡ [OccuPose Unit Rank $NODE_RANK / $NNODES] Launching $NUM_GPUS-GPU torchrun on $HOSTNAME_SHORT (Master IPv4: $MASTER_ADDR:$MASTER_PORT)..."
 
 /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
   --nnodes=$NNODES \
