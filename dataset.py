@@ -368,14 +368,19 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
         
         # 1. Parse CelebA annotations if present (.csv or .txt)
         if self.root_dir:
+            parent_dir = os.path.dirname(self.root_dir.rstrip('/'))
             if attr_file is None or not os.path.exists(attr_file):
-                for pf in [
+                possible_files = [
                     os.path.join(self.root_dir, "list_attr_celeba.csv"),
+                    os.path.join(self.root_dir, "celeba", "list_attr_celeba.csv"),
+                    os.path.join(parent_dir, "list_attr_celeba.csv"),
+                    os.path.join(parent_dir, "celeba", "list_attr_celeba.csv"),
                     os.path.join(self.root_dir, "list_attr_celeba.txt"),
                     os.path.join(self.root_dir, "attr_celeba.txt"),
                     os.path.join(self.root_dir, "Anno", "list_attr_celeba.txt"),
                     os.path.join(self.root_dir, "annotations", "list_attr_celeba.txt"),
-                ]:
+                ]
+                for pf in possible_files:
                     if os.path.exists(pf):
                         attr_file = pf
                         break
