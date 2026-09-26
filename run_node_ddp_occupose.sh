@@ -2,9 +2,9 @@
 export PYTHONUNBUFFERED=1
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
-export GLOO_SOCKET_IFNAME=eth0,ib0,ens,enp
-export NCCL_SOCKET_IFNAME=eth0,ib0,ens,enp
-export NCCL_IB_DISABLE=1
+export GLOO_SOCKET_IFNAME=ib0,eth0,ens,enp
+export NCCL_SOCKET_IFNAME=ib0,eth0,ens,enp
+export NCCL_IB_DISABLE=0
 export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
 
 source /lfs/usrhome/btech/na22b025/miniforge3/bin/activate
@@ -31,7 +31,11 @@ fi
 if [ -n "$ARG_MASTER" ]; then
     MASTER_ADDR="$ARG_MASTER"
 elif [ -f "$PBS_NODEFILE" ]; then
-    MASTER_ADDR=$(head -n 1 $PBS_NODEFILE | cut -d'.' -f1)
+    MASTER_NODE_SHORT=$(head -n 1 $PBS_NODEFILE | cut -d'.' -f1)
+    MASTER_ADDR=$(getent hosts $MASTER_NODE_SHORT | awk '{print $1}')
+    if [ -z "$MASTER_ADDR" ]; then
+        MASTER_ADDR=$MASTER_NODE_SHORT
+    fi
 else
     MASTER_ADDR=$(hostname | cut -d'.' -f1)
 fi
@@ -72,7 +76,7 @@ if [ "$NUM_GPUS" -eq 0 ]; then
     NUM_GPUS=2
 fi
 
-echo "⚡ [OccuPose Unit Rank $NODE_RANK / $NNODES] Launching $NUM_GPUS-GPU torchrun on $HOSTNAME_SHORT (Master: $MASTER_ADDR:$MASTER_PORT)..."
+echo "⚡ [OccuPose Unit Rank $NODE_RANK / $NNODES] Launching $NUM_GPUS-GPU torchrun on $HOSTNAME_SHORT (Master IP: $MASTER_ADDR:$MASTER_PORT)..."
 
 /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
   --nnodes=$NNODES \
