@@ -281,6 +281,11 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
         scheduler.step()
         if rank == 0:
             print(f"✓ ANet Epoch [{epoch}/{phase2_epochs}] Complete - Avg Loss: {running_loss / max(1, len(train_loader)):.4f}\n", flush=True)
+            if epoch % 5 == 0 or epoch == phase2_epochs:
+                anet_state = anet.module.state_dict() if hasattr(anet, 'module') else anet.state_dict()
+                periodic_path = os.path.join(cfg.train.checkpoint_dir, f"phase2_epoch_{epoch}.pt")
+                torch.save({'epoch': epoch, 'anet': anet_state}, periodic_path)
+                print(f"✓ Saved Phase 2 periodic checkpoint to: {periodic_path}", flush=True)
         
     if rank == 0:
         ckpt_path = os.path.join(cfg.train.checkpoint_dir, "phase2_anet_attributes.pt")
