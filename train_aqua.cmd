@@ -1,7 +1,7 @@
 #!/bin/bash
 #PBS -N OccuPose_Train
 #PBS -q gpuq
-#PBS -l select=1:ncpus=20:ngpus=4
+#PBS -l select=2:ncpus=10:ngpus=2
 #PBS -l walltime=48:00:00
 #PBS -j oe
 #PBS -o train_aqua_live.log
