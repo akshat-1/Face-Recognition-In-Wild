@@ -79,9 +79,9 @@ class UnlabeledWildDataset(data.Dataset):
     Dynamic Dataset Loader for 'unlabeled/' directory.
     Supports dynamic rescanning of constantly growing datasets uploaded in parallel.
     """
-    def __init__(self, unlabeled_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
+    def __init__(self, root_dir: str = None, unlabeled_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
         super(UnlabeledWildDataset, self).__init__()
-        self.unlabeled_dir = unlabeled_dir
+        self.unlabeled_dir = root_dir if root_dir is not None else unlabeled_dir
         self.image_size = image_size
         self.transform = transform if transform is not None else get_default_transform(image_size, is_train)
         self.samples = []
@@ -128,9 +128,9 @@ class NameLabeledFaceDataset(data.Dataset):
     Dynamic Dataset Loader for 'name_label/' directory.
     Supports dynamic rescanning of constantly growing labeled datasets uploaded in parallel.
     """
-    def __init__(self, name_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
+    def __init__(self, root_dir: str = None, name_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
         super(NameLabeledFaceDataset, self).__init__()
-        self.name_label_dir = name_label_dir
+        self.name_label_dir = root_dir if root_dir is not None else name_label_dir
         self.image_size = image_size
         self.transform = transform if transform is not None else get_default_transform(image_size, is_train)
         self.samples = []
@@ -219,9 +219,9 @@ class BoundingBoxFaceDataset(data.Dataset):
     Dynamic Dataset Loader for 'bb_label/' directory.
     Supports dynamic rescanning of bounding box datasets uploaded in parallel.
     """
-    def __init__(self, bb_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
+    def __init__(self, root_dir: str = None, bb_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
         super(BoundingBoxFaceDataset, self).__init__()
-        self.bb_label_dir = bb_label_dir
+        self.bb_label_dir = root_dir if root_dir is not None else bb_label_dir
         self.image_size = image_size
         self.transform = transform if transform is not None else get_default_transform(image_size, is_train)
         self.samples = []
