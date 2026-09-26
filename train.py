@@ -194,9 +194,10 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
         print(f"\n[Phase 1 Complete] Final Phase 1 Checkpoint saved to: {ckpt_path}")
     return backbone, num_classes
 
-def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp: bool = False, rank: int = 0, local_rank: int = 0, world_size: int = 1, force_retrain: bool = False):
+def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, device: torch.device = None, is_ddp: bool = False, rank: int = 0, local_rank: int = 0, world_size: int = 1, force_retrain: bool = False):
     """
     Phase 2 Training: ANet Multi-Task 40-Attribute Parser & Spatial Occlusion Attention.
+    Trained across all datasets (unlabeled, labeled, celeba) with self-supervised spatial mask supervision.
     """
     if rank == 0:
         print(f"\n========================================================================")
@@ -206,10 +207,13 @@ def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp
     celeba_dataset = CelebAAttributeDataset(root_dir=cfg.dataset.celeba_dir, is_train=True)
     if is_ddp:
         sampler = DistributedSampler(celeba_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        train_loader = DataLoader(celeba_dataset, batch_size=cfg.train.batch_size, sampler=sampler, num_workers=cfg.dataset.num_workers)
+        train_loader = DataLoader(celeba_dataset, batch_size=cfg.train.batch_size, sampler=sampler, num_workers=cfg.dataset.num_workers, pin_memory=True)
     else:
         sampler = None
-        train_loader = DataLoader(celeba_dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.dataset.num_workers)
+        train_loader = DataLoader(celeba_dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.dataset.num_workers, pin_memory=True)
+    
+    if rank == 0:
+        print(f"Phase 2 Unified Attribute Dataset initialized: {len(celeba_dataset)} images across all datasets.")
     
     anet = ANetAttributeParser(num_attributes=40).to(device)
     
@@ -226,31 +230,38 @@ def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp
             if rank == 0:
                 print(f"Warning: Could not load {phase2_ckpt}: {e}")
                 
-    if force_retrain and rank == 0:
-        print(f"[Phase 2 Reset] Force retraining Phase 2 ANet attribute parser from scratch using Phase 1 backbone weights...")
+    if rank == 0:
+        print(f"[Phase 2 Setup] Transferring Phase 1 identity backbone weights into ANet feature extractor...")
+    if backbone is not None:
+        anet.init_from_backbone(backbone)
 
     if is_ddp and device.type == 'cuda':
         anet = nn.parallel.DistributedDataParallel(anet, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
         
     criterion_bce = nn.BCEWithLogitsLoss()
+    criterion_mask = nn.BCELoss()
     optimizer = optim.Adam(anet.parameters(), lr=1e-3, weight_decay=1e-4)
+    
+    phase2_epochs = min(cfg.train.epochs, 30)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=phase2_epochs, eta_min=1e-5)
     scaler = GradScaler('cuda', enabled=cfg.model.fp16 and device.type == 'cuda')
     
     anet.train()
-    phase2_epochs = min(cfg.train.epochs, 15)
     for epoch in range(1, phase2_epochs + 1):
         if sampler is not None:
             sampler.set_epoch(epoch)
         running_loss = 0.0
-        for step, (images, attr_targets) in enumerate(train_loader):
-            images, attr_targets = images.to(device, non_blocking=True), attr_targets.to(device, non_blocking=True)
+        for step, (images, attr_targets, gt_masks) in enumerate(train_loader):
+            images = images.to(device, non_blocking=True)
+            attr_targets = attr_targets.to(device, non_blocking=True)
+            gt_masks = gt_masks.to(device, non_blocking=True)
             
             optimizer.zero_grad()
             with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
                 attr_logits, occ_mask, _ = anet(images)
                 loss_attr = criterion_bce(attr_logits, attr_targets)
-                loss_mask = 0.01 * occ_mask.pow(2).mean() # Regularizer so spatial_mask_head weights receive gradients in DDP
-                loss = loss_attr + loss_mask
+                loss_mask = criterion_mask(occ_mask, gt_masks)
+                loss = loss_attr + 0.5 * loss_mask
                 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
@@ -258,10 +269,12 @@ def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp
             running_loss += loss.item()
             
             if rank == 0 and (step % 50 == 0 or step == len(train_loader) - 1):
-                print(f"ANet Epoch [{epoch}/{phase2_epochs}] - Step [{step}/{len(train_loader)}] - Loss: {loss.item():.4f}", flush=True)
+                current_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else 1e-3
+                print(f"ANet Epoch [{epoch}/{phase2_epochs}] - Step [{step}/{len(train_loader)}] - Loss: {loss.item():.4f} (Attr: {loss_attr.item():.4f}, Mask: {loss_mask.item():.4f}) | LR: {current_lr:.6f}", flush=True)
             
+        scheduler.step()
         if rank == 0:
-            print(f"✓ ANet Epoch [{epoch}/{phase2_epochs}] Complete - Avg BCE Loss: {running_loss / max(1, len(train_loader)):.4f}\n", flush=True)
+            print(f"✓ ANet Epoch [{epoch}/{phase2_epochs}] Complete - Avg Loss: {running_loss / max(1, len(train_loader)):.4f}\n", flush=True)
         
     if rank == 0:
         ckpt_path = os.path.join(cfg.train.checkpoint_dir, "phase2_anet_attributes.pt")
@@ -372,7 +385,7 @@ def main():
     backbone, num_classes = train_phase1_backbone_curricular(cfg, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, resume=args.resume)
     
     # Phase 2: Train ANet Attribute Parser
-    anet = train_phase2_anet_attributes(cfg, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, force_retrain=args.retrain_phase2)
+    anet = train_phase2_anet_attributes(cfg, backbone, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, force_retrain=args.retrain_phase2)
     
     # Phase 3: Train GCN Semi-Supervised Link Predictor & Pseudo-Labeler on Unlabeled Faces
     train_phase3_semi_supervised_gcn(cfg, backbone, num_classes, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size)
