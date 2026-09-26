@@ -242,7 +242,7 @@ def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp
         if sampler is not None:
             sampler.set_epoch(epoch)
         running_loss = 0.0
-        for images, attr_targets in train_loader:
+        for step, (images, attr_targets) in enumerate(train_loader):
             images, attr_targets = images.to(device, non_blocking=True), attr_targets.to(device, non_blocking=True)
             
             optimizer.zero_grad()
@@ -257,8 +257,11 @@ def train_phase2_anet_attributes(cfg: SystemConfig, device: torch.device, is_ddp
             scaler.update()
             running_loss += loss.item()
             
+            if rank == 0 and (step % 50 == 0 or step == len(train_loader) - 1):
+                print(f"ANet Epoch [{epoch}/{phase2_epochs}] - Step [{step}/{len(train_loader)}] - Loss: {loss.item():.4f}", flush=True)
+            
         if rank == 0:
-            print(f"ANet Epoch [{epoch}/{phase2_epochs}] - Attribute BCE Loss: {running_loss / max(1, len(train_loader)):.4f}")
+            print(f"✓ ANet Epoch [{epoch}/{phase2_epochs}] Complete - Avg BCE Loss: {running_loss / max(1, len(train_loader)):.4f}\n", flush=True)
         
     if rank == 0:
         ckpt_path = os.path.join(cfg.train.checkpoint_dir, "phase2_anet_attributes.pt")
