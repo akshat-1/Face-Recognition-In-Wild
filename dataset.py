@@ -366,10 +366,11 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
         
         self.samples = []
         
-        # 1. Parse CelebA annotations if present
+        # 1. Parse CelebA annotations if present (.csv or .txt)
         if self.root_dir:
             if attr_file is None or not os.path.exists(attr_file):
                 for pf in [
+                    os.path.join(self.root_dir, "list_attr_celeba.csv"),
                     os.path.join(self.root_dir, "list_attr_celeba.txt"),
                     os.path.join(self.root_dir, "attr_celeba.txt"),
                     os.path.join(self.root_dir, "Anno", "list_attr_celeba.txt"),
@@ -379,14 +380,25 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
                         attr_file = pf
                         break
             if attr_file and os.path.exists(attr_file):
-                with open(attr_file, 'r') as f:
-                    lines = f.readlines()[2:]
-                    for line in lines:
-                        parts = line.strip().split()
-                        if len(parts) >= 41:
-                            img_name = parts[0]
-                            attrs = [1.0 if int(x) == 1 else 0.0 for x in parts[1:]]
-                            self.samples.append((os.path.join(self.root_dir, img_name), torch.tensor(attrs, dtype=torch.float32)))
+                if attr_file.endswith('.csv'):
+                    import csv
+                    with open(attr_file, 'r') as f:
+                        reader = csv.reader(f)
+                        header = next(reader)
+                        for row in reader:
+                            if len(row) >= 41:
+                                img_name = row[0]
+                                attrs = [1.0 if int(x) == 1 else 0.0 for x in row[1:]]
+                                self.samples.append((os.path.join(self.root_dir, img_name), torch.tensor(attrs, dtype=torch.float32)))
+                else:
+                    with open(attr_file, 'r') as f:
+                        lines = f.readlines()[2:]
+                        for line in lines:
+                            parts = line.strip().split()
+                            if len(parts) >= 41:
+                                img_name = parts[0]
+                                attrs = [1.0 if int(x) == 1 else 0.0 for x in parts[1:]]
+                                self.samples.append((os.path.join(self.root_dir, img_name), torch.tensor(attrs, dtype=torch.float32)))
         
         # 2. Automatically index all wild datasets (unlabeled, name_label, bb_label)
         search_dirs = []
