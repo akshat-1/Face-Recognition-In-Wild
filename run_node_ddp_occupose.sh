@@ -9,18 +9,13 @@ export NCCL_SOCKET_IFNAME=ib0,eth0,ens,enp
 export NCCL_IB_DISABLE=0
 export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
 
-source /lfs/usrhome/btech/na22b025/miniforge3/bin/activate
-conda activate venv_gpu
-
-if ! $HOME/miniforge3/envs/venv_gpu/bin/python -c "import torch; assert torch.cuda.is_available()"; then
-    echo "❌ [ERROR] CUDA is not available on $(hostname). Aborting DDP process."
-    exit 1
-fi
-
 ARG_NODEFILE="$1"
 ARG_MASTER="$2"
 ARG_PORT="$3"
 ARG_NNODES="$4"
+set --
+
+source /lfs/usrhome/btech/na22b025/miniforge3/bin/activate venv_gpu
 
 if [ -n "$ARG_NODEFILE" ] && [ -f "$ARG_NODEFILE" ]; then
     PBS_NODEFILE="$ARG_NODEFILE"

@@ -384,6 +384,8 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
             parent_dir = os.path.dirname(self.root_dir.rstrip('/'))
             if attr_file is None or not os.path.exists(attr_file):
                 possible_files = [
+                    os.path.join(os.getcwd(), "list_attr_celeba.csv"),
+                    "list_attr_celeba.csv",
                     os.path.join(self.root_dir, "list_attr_celeba.csv"),
                     os.path.join(self.root_dir, "celeba", "list_attr_celeba.csv"),
                     os.path.join(parent_dir, "list_attr_celeba.csv"),
@@ -492,22 +494,52 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
         # Generate 7x7 spatial occlusion target mask (1.0 = clean, 0.0 = occluded)
         gt_mask = torch.ones(1, 7, 7, dtype=torch.float32)
         
-        # Self-Supervised Synthetic Occlusion Augmentation (50% probability during training)
+        # Self-Supervised Synthetic Occlusion Augmentation (Random Scenario Selection: 5 Scenarios)
         if self.is_train and torch.rand(1).item() > 0.5:
-            r_start = torch.randint(0, 5, (1,)).item()
-            r_end = r_start + torch.randint(2, 4, (1,)).item()
-            c_start = torch.randint(0, 5, (1,)).item()
-            c_end = c_start + torch.randint(2, 4, (1,)).item()
+            scenario_type = torch.randint(0, 5, (1,)).item()
             
-            gt_mask[0, r_start:r_end, c_start:c_end] = 0.0
-            
+            if scenario_type == 0:
+                # Scenario 1: Lower-Face Mask / Scarf Scenario (Nose, Mouth, Chin)
+                r_start, r_end = 3, 7
+                c_start, c_end = 1, 6
+            elif scenario_type == 1:
+                # Scenario 2: Upper-Face Sunglasses / Hat Scenario (Eyes, Forehead)
+                r_start, r_end = 0, 3
+                c_start, c_end = 0, 7
+            elif scenario_type == 2:
+                # Scenario 3: Side-Face Profile / Hand / Hair Scenario
+                r_start, r_end = 0, 7
+                if torch.rand(1).item() > 0.5:
+                    c_start, c_end = 0, 3
+                else:
+                    c_start, c_end = 4, 7
+            elif scenario_type == 3:
+                # Scenario 4: Random Rectangular Occluder Scenario
+                r_start = torch.randint(0, 5, (1,)).item()
+                r_end = r_start + torch.randint(2, 4, (1,)).item()
+                c_start = torch.randint(0, 5, (1,)).item()
+                c_end = c_start + torch.randint(2, 4, (1,)).item()
+            else:
+                # Scenario 5: Multi-Patch / Scattered Occlusion Scenario
+                r1 = torch.randint(0, 4, (1,)).item()
+                c1 = torch.randint(0, 4, (1,)).item()
+                r2 = torch.randint(3, 6, (1,)).item()
+                c2 = torch.randint(3, 6, (1,)).item()
+                gt_mask[0, r1:min(7, r1+2), c1:min(7, c1+2)] = 0.0
+                gt_mask[0, r2:min(7, r2+2), c2:min(7, c2+2)] = 0.0
+                r_start, r_end, c_start, c_end = r1, min(7, r1+2), c1, min(7, c1+2)
+                
+            if scenario_type != 4:
+                gt_mask[0, r_start:r_end, c_start:c_end] = 0.0
+                
             x1, y1 = int((c_start / 7.0) * w), int((r_start / 7.0) * h)
             x2, y2 = int((c_end / 7.0) * w), int((r_end / 7.0) * h)
             
             try:
                 from PIL import ImageDraw
                 draw = ImageDraw.Draw(img)
-                draw.rectangle([x1, y1, x2, y2], fill=(40, 40, 40))
+                occ_color = (torch.randint(20, 80, (1,)).item(), torch.randint(20, 80, (1,)).item(), torch.randint(20, 80, (1,)).item())
+                draw.rectangle([x1, y1, x2, y2], fill=occ_color)
             except Exception:
                 pass
             

@@ -1,6 +1,7 @@
 import os
 import argparse
 import csv
+import math
 import time
 import torch
 import torch.nn.functional as F
@@ -44,6 +45,66 @@ def analyze_occlusion_mask(occ_mask: torch.Tensor):
         
     zone_str = ", ".join(zones) if zones else "No Major Local Occlusion"
     return round(float(occlusion_severity), 2), zone_str, mask_grid
+
+def generate_predictions_grid(output_dir: str, grid_filename: str = "all_predictions_grid.jpg", thumb_size=(320, 320)):
+    """
+    Creates a composite grid image combining all predicted annotated images in output_dir into a single single-page figure.
+    """
+    pred_files = []
+    if os.path.exists(output_dir):
+        for root, _, files in os.walk(output_dir):
+            for f in sorted(files):
+                if f.startswith("predicted_") and f.lower().endswith(VALID_IMAGE_EXTENSIONS):
+                    pred_files.append(os.path.join(root, f))
+                    
+    if len(pred_files) == 0:
+        print("No predicted images found for grid compilation.")
+        return None
+
+    num_images = len(pred_files)
+    cols = math.ceil(math.sqrt(num_images))
+    rows = math.ceil(num_images / float(cols))
+    
+    tw, th = thumb_size
+    header_h = 35
+    padding = 10
+    banner_h = 70
+    
+    grid_w = cols * (tw + padding) + padding
+    grid_h = rows * (th + header_h + padding) + padding + banner_h
+    
+    grid_img = Image.new('RGB', (grid_w, grid_h), color=(240, 242, 245))
+    draw = ImageDraw.Draw(grid_img)
+    
+    # Top banner title
+    draw.rectangle([0, 0, grid_w, banner_h], fill=(30, 40, 60))
+    title_text = f"OccuPose-BroadDictNet — Wild Face Recognition Prediction Grid ({num_images} Scenes)"
+    draw.text((padding + 10, 22), title_text, fill=(255, 255, 255))
+    
+    for idx, img_path in enumerate(pred_files):
+        r = idx // cols
+        c = idx % cols
+        
+        cell_x = padding + c * (tw + padding)
+        cell_y = banner_h + padding + r * (th + header_h + padding)
+        
+        try:
+            pimg = Image.open(img_path).convert('RGB')
+            pimg = pimg.resize((tw, th), Image.BILINEAR)
+            grid_img.paste(pimg, (cell_x, cell_y + header_h))
+            
+            fname = os.path.basename(img_path).replace("predicted_", "")
+            draw.rectangle([cell_x, cell_y, cell_x + tw, cell_y + header_h], fill=(220, 225, 230))
+            draw.text((cell_x + 5, cell_y + 8), f"#{idx+1}: {fname[:25]}", fill=(10, 20, 40))
+            
+            draw.rectangle([cell_x, cell_y + header_h, cell_x + tw, cell_y + header_h + th], outline=(180, 190, 200), width=2)
+        except Exception:
+            pass
+            
+    grid_path = os.path.join(output_dir, grid_filename)
+    grid_img.save(grid_path, quality=95)
+    print(f"✓ Saved composite grid figure to: {grid_path}")
+    return grid_path
 
 class OccludedFaceInferenceEngine:
     """
@@ -211,11 +272,15 @@ class OccludedFaceInferenceEngine:
             writer.writeheader()
             writer.writerows(summary_records)
             
+        grid_path = generate_predictions_grid(output_dir, grid_filename="all_predictions_grid.jpg")
+            
         elapsed = time.time() - start_time
         print(f"\n========================================================================")
         print(f"✓ Completed inference on {len(image_files)} test images in {elapsed:.2f}s ({elapsed/max(1, len(image_files)):.2f}s/img)")
         print(f"✓ Output annotated images saved to : {output_dir}")
         print(f"✓ CSV summary report saved to      : {csv_path}")
+        if grid_path:
+            print(f"✓ Composite grid figure saved to   : {grid_path}")
         print(f"========================================================================\n")
 
 def predict_occluded_faces(image_path: str, weights_dir: str = "./weights", output_dir: str = "./inference_results"):

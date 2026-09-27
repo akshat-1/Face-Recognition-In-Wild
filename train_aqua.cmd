@@ -3,7 +3,7 @@
 #PBS -o train_aqua_live.log
 #PBS -e train_aqua.err
 #PBS -l walltime=48:00:00
-#PBS -l select=1:ncpus=20:ngpus=2:mem=60gb:host=gpu005+1:ncpus=20:ngpus=2:mem=60gb:host=gpu015
+#PBS -l select=1:ncpus=10:ngpus=2:mem=30gb
 #PBS -q gpuq
 
 # =====================================================================
