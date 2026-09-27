@@ -40,7 +40,7 @@ def setup_ddp():
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return is_ddp, rank, local_rank, world_size, device
 
-def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is_ddp: bool = False, rank: int = 0, local_rank: int = 0, world_size: int = 1, resume: bool = False):
+def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is_ddp: bool = False, rank: int = 0, local_rank: int = 0, world_size: int = 1, resume: bool = False, force_retrain: bool = False):
     """
     Phase 1 Training: Backbone (IResNet-100 / ViT-Face) + CurricularFace Adaptive Loss + BroadFace Queue.
     Configured for Commercial SOTA standard (100 Epochs with periodic checkpointing).
@@ -91,7 +91,7 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
     if not os.path.exists(phase1_ckpt):
         phase1_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase1_backbone_curricular.pt")
         
-    if os.path.exists(phase1_ckpt):
+    if not force_retrain and os.path.exists(phase1_ckpt):
         try:
             ckpt_data = torch.load(phase1_ckpt, map_location=device)
             backbone.load_state_dict(ckpt_data['backbone'])
@@ -370,7 +370,9 @@ def main():
     parser.add_argument("--lr", type=float, default=0.1, help="Learning rate")
     parser.add_argument("--fp16", action="store_true", help="Enable AMP FP16")
     parser.add_argument("--resume", action="store_true", help="Resume training from latest checkpoint if available")
+    parser.add_argument("--retrain_phase1", action="store_true", help="Force retraining Phase 1 backbone from Epoch 1 (ignore old Phase 1 checkpoint)")
     parser.add_argument("--retrain_phase2", action="store_true", help="Force retraining Phase 2 ANet attribute parser (ignore old Phase 2 checkpoint)")
+    parser.add_argument("--retrain_all", action="store_true", help="Force retraining ALL phases (Phase 1, Phase 2, Phase 3) from scratch")
     args = parser.parse_args()
     
     is_ddp, rank, local_rank, world_size, device = setup_ddp()
@@ -392,11 +394,14 @@ def main():
     if rank == 0:
         print(f"Running OccuPose-BroadDictNet Training Engine on: {device} (Backbone: {cfg.model.backbone_type}) | DDP: {is_ddp} (World Size: {world_size}) | Target Epochs: {cfg.train.epochs}")
     
+    force_p1 = args.retrain_phase1 or args.retrain_all
+    force_p2 = args.retrain_phase2 or args.retrain_all
+    
     # Phase 1: Train Backbone + CurricularFace + BroadFace
-    backbone, num_classes = train_phase1_backbone_curricular(cfg, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, resume=args.resume)
+    backbone, num_classes = train_phase1_backbone_curricular(cfg, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, resume=args.resume, force_retrain=force_p1)
     
     # Phase 2: Train ANet Attribute Parser
-    anet = train_phase2_anet_attributes(cfg, backbone, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, force_retrain=args.retrain_phase2)
+    anet = train_phase2_anet_attributes(cfg, backbone, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, force_retrain=force_p2)
     
     # Phase 3: Train GCN Semi-Supervised Link Predictor & Pseudo-Labeler on Unlabeled Faces
     train_phase3_semi_supervised_gcn(cfg, backbone, num_classes, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size)

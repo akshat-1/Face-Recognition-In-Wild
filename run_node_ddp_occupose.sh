@@ -95,8 +95,7 @@ if [ "$NODE_RANK" -eq 0 ]; then
       --backbone iresnet100 \
       --batch_size 32 \
       --epochs 100 \
-      --resume \
-      --retrain_phase2 \
+      --retrain_all \
       --lr 0.1 \
       --fp16 2>&1 | tee -a "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_aqua_live.log"
 else
@@ -114,8 +113,7 @@ else
       --backbone iresnet100 \
       --batch_size 32 \
       --epochs 100 \
-      --resume \
-      --retrain_phase2 \
+      --retrain_all \
       --lr 0.1 \
       --fp16 > "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_node_1.log" 2>&1
 fi
