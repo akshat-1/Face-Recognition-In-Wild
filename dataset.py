@@ -98,12 +98,11 @@ class UnlabeledWildDataset(data.Dataset):
         self.samples = []
         if self.unlabeled_dir and os.path.exists(self.unlabeled_dir):
             for root, _, files in os.walk(self.unlabeled_dir):
-                if "masked-face-detection-wider-dataset" in root.lower():
-                    continue
                 for f in files:
                     if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                         self.samples.append(os.path.join(root, f))
-        else:
+                        
+        if len(self.samples) == 0:
             for _ in range(500):
                 self.samples.append("dummy_unlabeled")
                 
