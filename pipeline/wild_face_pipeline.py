@@ -136,19 +136,11 @@ class OccuPoseBroadDictPipeline(nn.Module):
             
             img_h, img_w = img_tensor.shape[2], img_tensor.shape[3]
             
-            # If no face box is detected or input is pre-cropped, use full image as face candidate
+            # If no face box is detected by detector, use full image as fallback
             if boxes.size(0) == 0:
                 boxes = torch.tensor([[0, 0, img_w, img_h]], device=img_tensor.device)
-                det_scores = torch.tensor([1.0], device=img_tensor.device)
+                det_scores = torch.tensor([0.5], device=img_tensor.device)
                 landmarks = torch.zeros(1, 5, 2, device=img_tensor.device)
-            elif img_w <= 300 or img_h <= 300:
-                # Pre-cropped face patch: append full-image box
-                full_box = torch.tensor([[0, 0, img_w, img_h]], device=img_tensor.device)
-                full_score = torch.tensor([1.0], device=img_tensor.device)
-                full_lm = torch.zeros(1, 5, 2, device=img_tensor.device)
-                boxes = torch.cat([boxes, full_box], dim=0)
-                det_scores = torch.cat([det_scores, full_score], dim=0)
-                landmarks = torch.cat([landmarks, full_lm], dim=0)
                 
             results = []
             
