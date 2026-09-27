@@ -14,15 +14,18 @@ class BroadFaceCurricularLoss(nn.Module):
     """
     def __init__(
         self,
-        in_features: int,
-        num_classes: int,
+        in_features: int = 512,
+        num_classes: int = 100,
         scale_factor: float = 64.0,
         margin: float = 0.50,
         alpha: float = 0.99,
         queue_size: int = 10000,
         compensate: bool = True,
+        feature_dim: int = None,
     ):
         super(BroadFaceCurricularLoss, self).__init__()
+        if feature_dim is not None:
+            in_features = feature_dim
         self.in_features = in_features
         self.num_classes = num_classes
         self.scale_factor = scale_factor
@@ -46,6 +49,17 @@ class BroadFaceCurricularLoss(nn.Module):
         self.register_buffer("feature_mb", feature_mb)
         self.register_buffer("label_mb", label_mb)
         self.register_buffer("proxy_mb", proxy_mb)
+
+    @property
+    def queue_ptr(self) -> torch.Tensor:
+        return torch.tensor(self.feature_mb.shape[0], device=self.weight.device)
+
+    @property
+    def is_full(self) -> torch.Tensor:
+        return torch.tensor(self.feature_mb.shape[0] >= self.queue_size, device=self.weight.device)
+
+    def get_queue_samples(self):
+        return self.feature_mb, self.label_mb
 
     @torch.no_grad()
     def update(self, input_tensor: torch.Tensor, label: torch.Tensor):

@@ -1,3 +1,4 @@
+import os
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
@@ -39,6 +40,10 @@ class OccuPoseBroadDictPipeline(nn.Module):
                 ckpt = torch.load(p1_path, map_location=device)
                 self.backbone.load_state_dict(ckpt['backbone'])
                 print(f"✓ Loaded Phase 1 Backbone weights from: {p1_path}")
+                if 'broadface_loss_fn' in ckpt and 'weight' in ckpt['broadface_loss_fn']:
+                    proto_weights = ckpt['broadface_loss_fn']['weight'] # (C, 512)
+                    self.ddrc_classifier.enroll_prototypes(proto_weights)
+                    print(f"✓ Enrolled {proto_weights.shape[0]} identity prototype centers into DDRC Classifier.")
             except Exception as e:
                 print(f"Warning: Failed to load Phase 1 weights from {p1_path}: {e}")
                 
@@ -59,6 +64,58 @@ class OccuPoseBroadDictPipeline(nn.Module):
             except Exception as e:
                 print(f"Warning: Failed to load Phase 3 weights from {p3_path}: {e}")
 
+    def enroll_dataset(self, name_label_dir: str, device: torch.device = None):
+        """
+        Enrolls identity face images from directory into DDRC Classifier dictionary.
+        """
+        if device is None:
+            device = next(self.parameters()).device
+            
+        from dataset import NameLabeledFaceDataset, get_default_transform
+        from PIL import Image
+        
+        ds = NameLabeledFaceDataset(name_label_dir=name_label_dir)
+        if len(ds.class_to_idx) == 0:
+            print(f"No identity classes found in {name_label_dir}")
+            return
+            
+        idx_to_class = {v: k for k, v in ds.class_to_idx.items()}
+        class_embeddings = {i: [] for i in range(len(idx_to_class))}
+        transform = get_default_transform(image_size=(112, 112), is_train=False)
+        
+        self.eval()
+        with torch.no_grad():
+            for img_path, label in ds.samples:
+                if os.path.exists(img_path) and os.path.getsize(img_path) > 0:
+                    try:
+                        img = Image.open(img_path).convert('RGB')
+                        tensor = transform(img).unsqueeze(0).to(device)
+                        emb = self.backbone(tensor)
+                        class_embeddings[label].append(emb.squeeze(0))
+                    except Exception:
+                        pass
+                        
+        prototypes = []
+        valid_names = []
+        for i in range(len(idx_to_class)):
+            if len(class_embeddings[i]) > 0:
+                mean_emb = torch.stack(class_embeddings[i]).mean(dim=0)
+                mean_emb = F.normalize(mean_emb, p=2, dim=0)
+                prototypes.append(mean_emb)
+                # Clean up class name formatting
+                name = idx_to_class[i]
+                for prefix in ["ROF_", "WILD_", "MASK_"]:
+                    if name.startswith(prefix):
+                        name = name[len(prefix):]
+                name = name.replace("_wearing_mask", "").replace("_", " ").title()
+                valid_names.append(name)
+                
+        if len(prototypes) > 0:
+            proto_tensor = torch.stack(prototypes)
+            self.ddrc_classifier.enroll_prototypes(proto_tensor, class_names=valid_names)
+            print(f"✓ Enrolled {len(valid_names)} identities from '{name_label_dir}' into DDRC Classifier:")
+            print(f"  Enrolled names: {', '.join(valid_names[:8])}...")
+
     def forward(self, img_tensor: torch.Tensor, score_threshold: float = 0.4) -> List[Dict[str, Any]]:
         """
         Args:
@@ -77,11 +134,23 @@ class OccuPoseBroadDictPipeline(nn.Module):
             # Step 1: Detect face bounding boxes & landmarks via LNet
             boxes, det_scores, landmarks = self.detector(img_tensor, score_threshold=score_threshold)
             
+            img_h, img_w = img_tensor.shape[2], img_tensor.shape[3]
+            
+            # If no face box is detected or input is pre-cropped, use full image as face candidate
             if boxes.size(0) == 0:
-                return []
+                boxes = torch.tensor([[0, 0, img_w, img_h]], device=img_tensor.device)
+                det_scores = torch.tensor([1.0], device=img_tensor.device)
+                landmarks = torch.zeros(1, 5, 2, device=img_tensor.device)
+            elif img_w <= 300 or img_h <= 300:
+                # Pre-cropped face patch: append full-image box
+                full_box = torch.tensor([[0, 0, img_w, img_h]], device=img_tensor.device)
+                full_score = torch.tensor([1.0], device=img_tensor.device)
+                full_lm = torch.zeros(1, 5, 2, device=img_tensor.device)
+                boxes = torch.cat([boxes, full_box], dim=0)
+                det_scores = torch.cat([det_scores, full_score], dim=0)
+                landmarks = torch.cat([landmarks, full_lm], dim=0)
                 
             results = []
-            img_h, img_w = img_tensor.shape[2], img_tensor.shape[3]
             
             # Process each detected face crop
             for i in range(boxes.size(0)):
@@ -132,4 +201,27 @@ class OccuPoseBroadDictPipeline(nn.Module):
                     'attributes': predicted_attrs
                 })
                 
-            return results
+            # Sort results by confidence descending
+            results = sorted(results, key=lambda r: r['confidence'], reverse=True)
+            
+            # Apply NMS on overlapping candidate boxes
+            filtered_results = []
+            for r in results:
+                b1 = r['box']
+                area1 = (b1[2] - b1[0]) * (b1[3] - b1[1])
+                keep = True
+                for prev in filtered_results:
+                    b2 = prev['box']
+                    area2 = (b2[2] - b2[0]) * (b2[3] - b2[1])
+                    ix1, iy1 = max(b1[0], b2[0]), max(b1[1], b2[1])
+                    ix2, iy2 = min(b1[2], b2[2]), min(b1[3], b2[3])
+                    inter = max(0, ix2 - ix1) * max(0, iy2 - iy1)
+                    iou = inter / float(area1 + area2 - inter + 1e-5)
+                    io_min = inter / float(min(area1, area2) + 1e-5)
+                    if iou > 0.3 or io_min > 0.6:
+                        keep = False
+                        break
+                if keep:
+                    filtered_results.append(r)
+                    
+            return filtered_results

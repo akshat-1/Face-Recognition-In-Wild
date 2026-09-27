@@ -27,7 +27,7 @@ def analyze_occlusion_mask(occ_mask: torch.Tensor):
     Returns occlusion severity percentage and spatial zone breakdown.
     """
     # occ_mask is (1, 1, 7, 7) or (1, 7, 7)
-    mask_grid = occ_mask.squeeze().cpu().numpy() # (7, 7) array with values in [0, 1]
+    mask_grid = occ_mask.squeeze().detach().cpu().numpy() # (7, 7) array with values in [0, 1]
     
     # Clean regions have weight ~ 1.0, occluded regions have weight < 0.5
     occlusion_severity = (1.0 - np.mean(mask_grid)) * 100.0
@@ -57,6 +57,12 @@ def predict_occluded_faces(image_path: str, weights_dir: str = "./weights", outp
     # 1. Initialize Pipeline & Load Pretrained Checkpoints
     pipeline = OccuPoseBroadDictPipeline(num_enrolled_classes=100, feature_dim=512).to(device)
     pipeline.load_pretrained_weights(checkpoint_dir=weights_dir, device=device)
+    
+    # Auto-enroll identity gallery if available
+    name_label_dir = "Face_Dataset/name_label"
+    if os.path.exists(name_label_dir):
+        pipeline.enroll_dataset(name_label_dir, device=device)
+        
     pipeline.eval()
     
     # 2. Preprocess Input Wild Image
@@ -77,41 +83,42 @@ def predict_occluded_faces(image_path: str, weights_dir: str = "./weights", outp
     draw = ImageDraw.Draw(pil_img)
     os.makedirs(output_dir, exist_ok=True)
     
-    for idx, res in enumerate(results):
-        box = res['box']
-        identity = res['identity']
-        confidence = res['confidence']
-        is_occluded = res['is_occluded']
-        attributes = res['attributes']
-        
-        # Crop face patch for ANet spatial mask breakdown
-        x1, y1, x2, y2 = box
-        crop_patch = img_tensor[:, :, max(0, y1):min(orig_h, y2), max(0, x1):min(orig_w, x2)]
-        if crop_patch.shape[2] > 5 and crop_patch.shape[3] > 5:
-            resized_crop = F.interpolate(crop_patch, size=(112, 112), mode='bilinear', align_corners=False)
-            attr_logits, occ_mask, _ = pipeline.attribute_parser(resized_crop)
-            severity_pct, zone_desc, mask_grid = analyze_occlusion_mask(occ_mask)
-        else:
-            severity_pct, zone_desc = 0.0, "Clean"
+    with torch.no_grad():
+        for idx, res in enumerate(results):
+            box = res['box']
+            identity = res['identity']
+            confidence = res['confidence']
+            is_occluded = res['is_occluded']
+            attributes = res['attributes']
             
-        print(f"\n------------------------------------------------------------------------")
-        print(f"Face Candidate #{idx + 1}:")
-        print(f"  • Bounding Box Coordinates : [{x1}, {y1}, {x2}, {y2}]")
-        print(f"  • Predicted Identity       : {identity.upper()} (Confidence: {confidence:.2%})")
-        print(f"  • Major Occlusion Flag     : {is_occluded} (Severity: {severity_pct}%)")
-        print(f"  • Affected Spatial Zones   : {zone_desc}")
-        print(f"  • Top Predicted Attributes :")
-        for attr_name, active in list(attributes.items())[:6]:
-            flag_str = "YES" if active else "NO"
-            print(f"      - {attr_name:25s}: {flag_str}")
+            # Crop face patch for ANet spatial mask breakdown
+            x1, y1, x2, y2 = box
+            crop_patch = img_tensor[:, :, max(0, y1):min(orig_h, y2), max(0, x1):min(orig_w, x2)]
+            if crop_patch.shape[2] > 5 and crop_patch.shape[3] > 5:
+                resized_crop = F.interpolate(crop_patch, size=(112, 112), mode='bilinear', align_corners=False)
+                attr_logits, occ_mask, _ = pipeline.attribute_parser(resized_crop)
+                severity_pct, zone_desc, mask_grid = analyze_occlusion_mask(occ_mask)
+            else:
+                severity_pct, zone_desc = 0.0, "Clean"
+                
+            print(f"\n------------------------------------------------------------------------")
+            print(f"Face Candidate #{idx + 1}:")
+            print(f"  • Bounding Box Coordinates : [{x1}, {y1}, {x2}, {y2}]")
+            print(f"  • Predicted Identity       : {identity.upper()} (Confidence: {confidence:.2%})")
+            print(f"  • Major Occlusion Flag     : {is_occluded} (Severity: {severity_pct}%)")
+            print(f"  • Affected Spatial Zones   : {zone_desc}")
+            print(f"  • Top Predicted Attributes :")
+            for attr_name, active in list(attributes.items())[:6]:
+                flag_str = "YES" if active else "NO"
+                print(f"      - {attr_name:25s}: {flag_str}")
+                
+            # Draw bounding box & identity tag on visualization image
+            box_color = (255, 50, 50) if is_occluded else (50, 255, 50)
+            draw.rectangle([x1, y1, x2, y2], outline=box_color, width=3)
             
-        # Draw bounding box & identity tag on visualization image
-        box_color = (255, 50, 50) if is_occluded else (50, 255, 50)
-        draw.rectangle([x1, y1, x2, y2], outline=box_color, width=3)
-        
-        label_text = f"{identity} ({confidence:.0%}) | Occ: {severity_pct:.0f}%"
-        draw.rectangle([x1, max(0, y1 - 20), x1 + len(label_text) * 7, max(0, y1)], fill=box_color)
-        draw.text((x1 + 3, max(0, y1 - 18)), label_text, fill=(255, 255, 255))
+            label_text = f"{identity} ({confidence:.0%}) | Occ: {severity_pct:.0f}%"
+            draw.rectangle([x1, max(0, y1 - 20), x1 + len(label_text) * 7, max(0, y1)], fill=box_color)
+            draw.text((x1 + 3, max(0, y1 - 18)), label_text, fill=(255, 255, 255))
         
     out_filename = os.path.basename(image_path)
     save_path = os.path.join(output_dir, f"predicted_{out_filename}")
