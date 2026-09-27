@@ -23,6 +23,42 @@ class OccuPoseBroadDictPipeline(nn.Module):
         self.backbone = ResNet100Backbone(embedding_dim=feature_dim)
         self.ddrc_classifier = DDRCClassifier(feature_dim=feature_dim, num_classes=num_enrolled_classes)
 
+    def load_pretrained_weights(self, checkpoint_dir: str = "./weights", device: torch.device = None):
+        """
+        Loads Phase 1, Phase 2, and Phase 3 trained weight checkpoints for end-to-end inference.
+        """
+        if device is None:
+            device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+            
+        p1_path = os.path.join(checkpoint_dir, "phase1_backbone_curricular.pt")
+        if not os.path.exists(p1_path):
+            p1_path = os.path.join(checkpoint_dir, "phase1_epoch_100.pt")
+            
+        if os.path.exists(p1_path):
+            try:
+                ckpt = torch.load(p1_path, map_location=device)
+                self.backbone.load_state_dict(ckpt['backbone'])
+                print(f"✓ Loaded Phase 1 Backbone weights from: {p1_path}")
+            except Exception as e:
+                print(f"Warning: Failed to load Phase 1 weights from {p1_path}: {e}")
+                
+        p2_path = os.path.join(checkpoint_dir, "phase2_anet_attributes.pt")
+        if os.path.exists(p2_path):
+            try:
+                ckpt = torch.load(p2_path, map_location=device)
+                self.attribute_parser.load_state_dict(ckpt['anet'])
+                print(f"✓ Loaded Phase 2 ANet Attribute Parser weights from: {p2_path}")
+            except Exception as e:
+                print(f"Warning: Failed to load Phase 2 weights from {p2_path}: {e}")
+                
+        p3_path = os.path.join(checkpoint_dir, "phase3_semi_gcn_predictor.pt")
+        if os.path.exists(p3_path):
+            try:
+                ckpt = torch.load(p3_path, map_location=device)
+                print(f"✓ Loaded Phase 3 GCN Link Predictor weights from: {p3_path}")
+            except Exception as e:
+                print(f"Warning: Failed to load Phase 3 weights from {p3_path}: {e}")
+
     def forward(self, img_tensor: torch.Tensor, score_threshold: float = 0.4) -> List[Dict[str, Any]]:
         """
         Args:
