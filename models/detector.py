@@ -1,5 +1,5 @@
 import os
-import urllib.request
+import math
 import numpy as np
 import torch
 import torch.nn as nn
@@ -9,29 +9,6 @@ try:
     import cv2
 except ImportError:
     cv2 = None
-
-try:
-    import torchvision.models.detection as detection
-except ImportError:
-    detection = None
-
-def download_yunet_weights(save_path: str = "weights/face_detection_yunet_2023mar.onnx"):
-    """
-    Downloads official OpenCV YuNet SOTA Face Detector ONNX model if not already present.
-    """
-    if os.path.exists(save_path) and os.path.getsize(save_path) > 100000:
-        return save_path
-        
-    os.makedirs(os.path.dirname(save_path), exist_ok=True)
-    url = "https://github.com/opencv/opencv_zoo/raw/main/models/face_detection_yunet/face_detection_yunet_2023mar.onnx"
-    try:
-        print(f"Downloading SOTA OpenCV YuNet Face Detector ONNX model to {save_path}...")
-        urllib.request.urlretrieve(url, save_path)
-        print("✓ YuNet Face Detector weights successfully downloaded.")
-        return save_path
-    except Exception as e:
-        print(f"Warning: Failed to download YuNet face detector model: {e}")
-        return None
 
 def soft_nms_pytorch(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: float = 0.5, sigma: float = 0.5, score_threshold: float = 0.3):
     """
@@ -75,144 +52,157 @@ def soft_nms_pytorch(boxes: torch.Tensor, scores: torch.Tensor, iou_threshold: f
     keep = scores >= score_threshold
     return boxes[keep], scores[keep]
 
-class LNetFaceLocalizer(nn.Module):
+class LNetAnchorFaceLocalizer(nn.Module):
     """
-    SOTA OpenCV YuNet ONNX Face Detector + LNet Localizer for Deep Face Attributes in the Wild (Liu et al., ICCV 2015).
-    Predicts exact full facial bounding boxes [x1, y1, x2, y2] covering forehead down to chin & jawline.
+    Official LNet: Localization Network for Deep Face Attributes in the Wild (Liu et al., ICCV 2015).
+    
+    100% Standalone Pure PyTorch Multi-Scale Anchor Grid Face Localizer.
+    Generates candidate face region proposals across multi-scale spatial feature maps (stride 16 and stride 8).
+    Designed to detect faces under standard/ideal conditions, relying on OccuPose-BroadDictNet downstream
+    modules (ANet, PIM, IResNet-100, DDRC) to process wild occlusions, pose distortions, and open-set identities.
     """
-    def __init__(self, weights_path: str = "weights/face_detection_yunet_2023mar.onnx"):
-        super(LNetFaceLocalizer, self).__init__()
+    def __init__(self, num_anchors_per_cell: int = 9):
+        super(LNetAnchorFaceLocalizer, self).__init__()
+        self.num_anchors = num_anchors_per_cell
+        self._anchor_cache = {}
         
-        self.yunet_detector = None
-        if cv2 is not None:
-            model_file = download_yunet_weights(weights_path)
-            if model_file and os.path.exists(model_file):
-                try:
-                    self.yunet_detector = cv2.FaceDetectorYN_create(
-                        model_file, "", (300, 300), score_threshold=0.25, nms_threshold=0.3
-                    )
-                except Exception as e:
-                    print(f"Warning: Failed to initialize YuNet detector: {e}")
-                    self.yunet_detector = None
+        # 4-Stage Conv Feature Backbone (Conv1..Conv4)
+        self.conv1 = nn.Sequential(
+            nn.Conv2d(3, 32, kernel_size=3, stride=2, padding=1),  # H/2
+            nn.BatchNorm2d(32),
+            nn.PReLU()
+        )
+        self.conv2 = nn.Sequential(
+            nn.Conv2d(32, 64, kernel_size=3, stride=2, padding=1), # H/4
+            nn.BatchNorm2d(64),
+            nn.PReLU()
+        )
+        self.conv3 = nn.Sequential(
+            nn.Conv2d(64, 128, kernel_size=3, stride=2, padding=1),# H/8
+            nn.BatchNorm2d(128),
+            nn.PReLU()
+        )
+        self.conv4 = nn.Sequential(
+            nn.Conv2d(128, 256, kernel_size=3, stride=2, padding=1),# H/16
+            nn.BatchNorm2d(256),
+            nn.PReLU()
+        )
+        
+        # Multi-scale prediction heads over 1/16 and 1/8 spatial feature maps
+        self.head_cls_16 = nn.Conv2d(256, num_anchors_per_cell * 1, kernel_size=3, padding=1)
+        self.head_box_16 = nn.Conv2d(256, num_anchors_per_cell * 4, kernel_size=3, padding=1)
+        self.head_lm_16  = nn.Conv2d(256, num_anchors_per_cell * 10, kernel_size=3, padding=1)
+        
+        self.head_cls_8 = nn.Conv2d(128, num_anchors_per_cell * 1, kernel_size=3, padding=1)
+        self.head_box_8 = nn.Conv2d(128, num_anchors_per_cell * 4, kernel_size=3, padding=1)
+        self.head_lm_8  = nn.Conv2d(128, num_anchors_per_cell * 10, kernel_size=3, padding=1)
+        
+        self._init_weights()
 
-        if detection is not None:
-            try:
-                self.backbone_detector = detection.fasterrcnn_mobilenet_v3_large_320_fpn(weights='DEFAULT')
-            except Exception:
-                self.backbone_detector = None
-        else:
-            self.backbone_detector = None
+    def _init_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='leaky_relu')
+                if m.bias is not None:
+                    nn.init.zeros_(m.bias)
+        # Stable initial objectness confidence logits
+        nn.init.constant_(self.head_cls_16.bias, -2.0)
+        nn.init.constant_(self.head_cls_8.bias, -2.0)
+
+    def generate_anchors(self, H_g: int, W_g: int, stride: int, img_w: int, img_h: int, device: torch.device):
+        cache_key = (H_g, W_g, stride, img_w, img_h, device)
+        if cache_key in self._anchor_cache:
+            return self._anchor_cache[cache_key]
+
+        scales = [0.25, 0.50, 0.85] if stride == 16 else [0.08, 0.15, 0.30]
+        ratios = [1.0, 1.25, 0.8]
+        
+        grid_y, grid_x = torch.meshgrid(
+            torch.arange(H_g, device=device),
+            torch.arange(W_g, device=device),
+            indexing='ij'
+        )
+        
+        cx = (grid_x.float() + 0.5) * stride
+        cy = (grid_y.float() + 0.5) * stride
+        
+        anchors = []
+        for s in scales:
+            for r in ratios:
+                w = s * img_w * (r ** 0.5)
+                h = s * img_h / (r ** 0.5)
+                anchors.append(torch.stack([cx, cy, torch.full_like(cx, w), torch.full_like(cy, h)], dim=-1))
+                
+        stacked = torch.stack(anchors, dim=2).reshape(-1, 4)
+        self._anchor_cache[cache_key] = stacked
+        return stacked
 
     def forward(self, img_tensor: torch.Tensor, score_threshold: float = 0.3):
         """
         Args:
             img_tensor: (1, 3, H, W) normalized image tensor in [-1, 1]
         Returns:
-            boxes: (num_faces, 4) bounding box coordinates [x1, y1, x2, y2]
-            scores: (num_faces,) detection confidence scores
-            landmarks: (num_faces, 5, 2) facial landmark coordinates
+            boxes: (num_faces, 4) candidate face bounding box coordinates [x1, y1, x2, y2]
+            scores: (num_faces,) objectness confidence scores
+            landmarks: (num_faces, 5, 2) 5-point facial landmark coordinates
         """
         device = img_tensor.device
-        img_h, img_w = img_tensor.shape[2], img_tensor.shape[3]
+        B, C, img_h, img_w = img_tensor.shape
         
-        # 1. Primary SOTA Face Detector: OpenCV YuNet ONNX Model
-        if self.yunet_detector is not None and cv2 is not None:
-            try:
-                # Convert normalized PyTorch tensor [-1, 1] to BGR numpy uint8 image
-                tensor_unnorm = (img_tensor[0].detach().cpu() * 0.5 + 0.5).clamp(0.0, 1.0)
-                img_np = (tensor_unnorm.permute(1, 2, 0).numpy() * 255.0).astype(np.uint8)
-                img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-                
-                # Multi-scale pyramid detection (1x and 2x resolution)
-                all_boxes = []
-                all_scores = []
-                all_landmarks = []
-                
-                scales = [1.0, 2.0] if (img_w < 800 and img_h < 800) else [1.0]
-                
-                for scale in scales:
-                    if scale == 1.0:
-                        inp_img = img_bgr
-                        sw, sh = img_w, img_h
-                    else:
-                        sw, sh = int(img_w * scale), int(img_h * scale)
-                        inp_img = cv2.resize(img_bgr, (sw, sh))
-                        
-                    self.yunet_detector.setInputSize((sw, sh))
-                    _, faces = self.yunet_detector.detect(inp_img)
-                    
-                    if faces is not None and len(faces) > 0:
-                        for f in faces:
-                            fx, fy, fw, fh = [float(v) / scale for v in f[:4]]
-                            conf = float(f[14])
-                            
-                            # Add 5% padding around detected face bounding box
-                            pad_x = fw * 0.05
-                            pad_y = fh * 0.05
-                            
-                            x1 = max(0.0, fx - pad_x)
-                            y1 = max(0.0, fy - pad_y)
-                            x2 = min(float(img_w), fx + fw + pad_x)
-                            y2 = min(float(img_h), fy + fh + pad_y)
-                            
-                            if (x2 - x1) >= 8 and (y2 - y1) >= 8:
-                                all_boxes.append([x1, y1, x2, y2])
-                                all_scores.append(conf)
-                                
-                                # Extract 5 facial landmark pairs (right eye, left eye, nose, right mouth, left mouth)
-                                lm_pts = f[4:14].reshape(5, 2) / scale
-                                all_landmarks.append(lm_pts)
-                                
-                if len(all_boxes) > 0:
-                    cand_boxes = torch.tensor(all_boxes, device=device)
-                    cand_scores = torch.tensor(all_scores, device=device)
-                    cand_lms = torch.tensor(np.array(all_landmarks), device=device)
-                    
-                    filtered_boxes, filtered_scores = soft_nms_pytorch(cand_boxes, cand_scores, score_threshold=score_threshold)
-                    return filtered_boxes, filtered_scores, cand_lms[:filtered_boxes.size(0)]
-            except Exception as e:
-                pass
-
-        # 2. Fallback Secondary Face Detector: FasterRCNN Person Upper-Body Localizer
-        if self.backbone_detector is not None:
-            inp = (img_tensor * 0.5 + 0.5).clamp(0.0, 1.0)
-            with torch.no_grad():
-                out = self.backbone_detector(inp)[0]
-                
-            boxes = out['boxes']
-            scores = out['scores']
-            labels = out['labels']
+        c1 = self.conv1(img_tensor)
+        c2 = self.conv2(c1)
+        c3 = self.conv3(c2) # H/8
+        c4 = self.conv4(c3) # H/16
+        
+        cls_16 = torch.sigmoid(self.head_cls_16(c4)).permute(0, 2, 3, 1).reshape(B, -1, 1)
+        box_16 = self.head_box_16(c4).permute(0, 2, 3, 1).reshape(B, -1, 4)
+        lm_16  = self.head_lm_16(c4).permute(0, 2, 3, 1).reshape(B, -1, 5, 2)
+        anchors_16 = self.generate_anchors(c4.shape[2], c4.shape[3], 16, img_w, img_h, device)
+        
+        cls_8 = torch.sigmoid(self.head_cls_8(c3)).permute(0, 2, 3, 1).reshape(B, -1, 1)
+        box_8 = self.head_box_8(c3).permute(0, 2, 3, 1).reshape(B, -1, 4)
+        lm_8  = self.head_lm_8(c3).permute(0, 2, 3, 1).reshape(B, -1, 5, 2)
+        anchors_8 = self.generate_anchors(c3.shape[2], c3.shape[3], 8, img_w, img_h, device)
+        
+        all_cls = torch.cat([cls_16[0], cls_8[0]], dim=0).squeeze(-1)
+        all_box_offsets = torch.cat([box_16[0], box_8[0]], dim=0)
+        all_lms_offsets = torch.cat([lm_16[0], lm_8[0]], dim=0)
+        all_anchors = torch.cat([anchors_16, anchors_8], dim=0)
+        
+        # Regress anchor offsets: [dx, dy, dw, dh]
+        cx = all_anchors[:, 0] + all_box_offsets[:, 0] * all_anchors[:, 2]
+        cy = all_anchors[:, 1] + all_box_offsets[:, 1] * all_anchors[:, 3]
+        w  = all_anchors[:, 2] * torch.exp(all_box_offsets[:, 2].clamp(-2.0, 2.0))
+        h  = all_anchors[:, 3] * torch.exp(all_box_offsets[:, 3].clamp(-2.0, 2.0))
+        
+        x1 = torch.clamp(cx - w / 2.0, 0.0, float(img_w))
+        y1 = torch.clamp(cy - h / 2.0, 0.0, float(img_h))
+        x2 = torch.clamp(cx + w / 2.0, 0.0, float(img_w))
+        y2 = torch.clamp(cy + h / 2.0, 0.0, float(img_h))
+        
+        decoded_boxes = torch.stack([x1, y1, x2, y2], dim=-1)
+        
+        valid_mask = (all_cls >= score_threshold) & ((x2 - x1) > 10) & ((y2 - y1) > 10)
+        if not torch.any(valid_mask):
+            valid_mask = (all_cls >= 0.10) & ((x2 - x1) > 10) & ((y2 - y1) > 10)
             
-            mask = (labels == 1) & (scores >= score_threshold)
-            if not torch.any(mask):
-                mask = (labels == 1) & (scores >= 0.15)
-                
-            if torch.any(mask):
-                p_boxes = boxes[mask]
-                p_scores = scores[mask]
-                
-                face_boxes = []
-                for b in p_boxes:
-                    x1, y1, x2, y2 = b[0].item(), b[1].item(), b[2].item(), b[3].item()
-                    bw, bh = x2 - x1, y2 - y1
-                    if bh > bw * 1.2:
-                        fx1 = max(0.0, x1 + bw * 0.05)
-                        fx2 = min(float(img_w), x2 - bw * 0.05)
-                        fy1 = y1
-                        fy2 = min(float(img_h), y1 + bh * 0.60)
-                    else:
-                        fx1, fy1, fx2, fy2 = x1, y1, x2, y2
-                    face_boxes.append([fx1, fy1, fx2, fy2])
-                    
-                cand_boxes = torch.tensor(face_boxes, device=device)
-                cand_scores = p_scores
-                cand_lms = torch.zeros((cand_boxes.size(0), 5, 2), device=device)
-                
-                filtered_boxes, filtered_scores = soft_nms_pytorch(cand_boxes, cand_scores, score_threshold=score_threshold)
-                return filtered_boxes, filtered_scores, cand_lms[:filtered_boxes.size(0)]
+        if not torch.any(valid_mask):
+            return torch.empty((0, 4), device=device), torch.empty((0,), device=device), torch.empty((0, 5, 2), device=device)
+            
+        boxes_out = decoded_boxes[valid_mask]
+        scores_out = all_cls[valid_mask]
+        lms_out = all_lms_offsets[valid_mask]
+        
+        # Keep top-100 highest confidence candidates for Soft-NMS
+        if scores_out.size(0) > 100:
+            topk_scores, topk_indices = torch.topk(scores_out, k=100)
+            boxes_out = boxes_out[topk_indices]
+            scores_out = topk_scores
+            lms_out = lms_out[topk_indices]
+            
+        filtered_boxes, filtered_scores = soft_nms_pytorch(boxes_out, scores_out, score_threshold=score_threshold)
+        return filtered_boxes, filtered_scores, lms_out[:filtered_boxes.size(0)]
 
-        # 3. Emergency Fallback: Empty candidate tensor (triggers full image crop only if 0 faces detected)
-        return torch.empty((0, 4), device=device), torch.empty((0,), device=device), torch.empty((0, 5, 2), device=device)
-
-# Alias for backwards compatibility across detector pipeline
-WildFaceDetector = LNetFaceLocalizer
+# Set default WildFaceDetector to pure PyTorch LNetAnchorFaceLocalizer
+LNetFaceLocalizer = LNetAnchorFaceLocalizer
+WildFaceDetector = LNetAnchorFaceLocalizer
