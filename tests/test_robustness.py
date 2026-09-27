@@ -128,11 +128,12 @@ class TestOccuPoseBroadDictNet(unittest.TestCase):
     def test_wild_face_pipeline(self):
         pipeline = OccuPoseBroadDictPipeline(num_enrolled_classes=10, feature_dim=512).to(self.device)
         
-        # Zero score head weight and set bias positive so synthetic image guarantees >0.95 detection scores
-        nn.init.zeros_(pipeline.detector.score_head.weight)
-        nn.init.constant_(pipeline.detector.score_head.bias, 5.0)
-        nn.init.zeros_(pipeline.detector.bbox_head.weight)
-        nn.init.constant_(pipeline.detector.bbox_head.bias, 0.5)
+        # Initialize score head if present
+        if hasattr(pipeline.detector, 'score_head'):
+            nn.init.zeros_(pipeline.detector.score_head.weight)
+            nn.init.constant_(pipeline.detector.score_head.bias, 5.0)
+            nn.init.zeros_(pipeline.detector.bbox_head.weight)
+            nn.init.constant_(pipeline.detector.bbox_head.bias, 0.5)
         
         img = torch.randn(1, 3, 224, 224, device=self.device)
         
