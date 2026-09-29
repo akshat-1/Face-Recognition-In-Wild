@@ -176,7 +176,10 @@ class OccuPoseBroadDictPipeline(nn.Module):
                 # Step 5: DDRC Sparse Dictionary classification & open-set unknown check
                 preds, confs, residuals = self.ddrc_classifier(embedding)
                 identity_label = preds[0]
-                confidence = confs[0].item() * det_scores[i].item() # Calibrate with detection score
+                raw_ddrc_conf = confs[0].item()
+                det_conf = det_scores[i].item()
+                # Calibrated confidence: DDRC match confidence if known identity, else detection/quality score
+                confidence = raw_ddrc_conf if identity_label != 'unknown' else max(raw_ddrc_conf, det_conf)
                 
                 # Parse top attributes
                 attr_probs = torch.sigmoid(attr_logits[0])
