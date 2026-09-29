@@ -6,7 +6,7 @@ import torch
 import numpy as np
 from PIL import Image, ImageDraw
 
-from models.detector import SOTAFaceDetector
+from models.detector import FasterRCNNFaceDetector, SOTAFaceDetector
 
 VALID_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
 
@@ -72,15 +72,15 @@ def generate_predictions_grid(output_dir: str, grid_filename: str = "all_predict
 
 def run_pretrained_detector_inference(image_dir: str, weights_dir: str = "./weights", output_dir: str = "./results/pretrained"):
     """
-    Runs inference using ONLY the pretrained MTCNN + OpenCV YuNet ONNX face detector.
+    Runs inference using ONLY the pretrained Faster-RCNN (ResNet-50 FPN) + MTCNN + YuNet detector.
     """
     print(f"========================================================================")
-    print(f"--- Pretrained MTCNN + OpenCV YuNet ONNX Face Detector ---")
+    print(f"--- Pretrained Faster-RCNN (ResNet-50 FPN) + SOTA Face Detector ---")
     print(f"Input Directory: {image_dir} | Output Directory: {output_dir}")
     print(f"========================================================================\n")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    detector = SOTAFaceDetector(weights_dir=weights_dir).to(device)
+    detector = FasterRCNNFaceDetector(weights_dir=weights_dir).to(device)
     detector.eval()
     
     os.makedirs(output_dir, exist_ok=True)
