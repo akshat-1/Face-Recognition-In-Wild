@@ -111,7 +111,7 @@ class OccludedFaceInferenceEngine:
     Production Inference Engine for OccuPose-BroadDictNet.
     Loads weight checkpoints ONCE and batch-evaluates test images efficiently on GPU/CPU.
     """
-    def __init__(self, weights_dir: str = "./weights", gallery_dir: str = "Face_Dataset/name_label"):
+    def __init__(self, weights_dir: str = "./weights", gallery_dir: str = "./Face_Dataset/name_label"):
         self.device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
         print(f"========================================================================")
         print(f"--- OccuPose-BroadDictNet Production Inference Engine ---")
@@ -145,7 +145,18 @@ class OccludedFaceInferenceEngine:
         with torch.no_grad():
             results = self.pipeline(img_tensor, score_threshold=0.3)
 
-        os.makedirs(output_dir, exist_ok=True)
+        if not output_dir or output_dir.strip() == "/" or not os.access(os.path.dirname(os.path.abspath(output_dir)), os.W_OK):
+            if output_dir == "/":
+                print(f"⚠️ Warning: Root directory '/' is read-only. Redirecting output_dir to './results'")
+            output_dir = "./results"
+            
+        try:
+            os.makedirs(output_dir, exist_ok=True)
+        except (PermissionError, OSError):
+            print(f"⚠️ Warning: Cannot write to '{output_dir}'. Falling back to './results'")
+            output_dir = "./results"
+            os.makedirs(output_dir, exist_ok=True)
+
         draw = ImageDraw.Draw(pil_img)
         
         processed_faces = []
@@ -200,7 +211,14 @@ class OccludedFaceInferenceEngine:
                 
         out_filename = os.path.basename(image_path)
         save_path = os.path.join(output_dir, f"predicted_{out_filename}")
-        pil_img.save(save_path)
+        try:
+            pil_img.save(save_path)
+        except (PermissionError, OSError) as e:
+            fallback_dir = "./results"
+            os.makedirs(fallback_dir, exist_ok=True)
+            save_path = os.path.join(fallback_dir, f"predicted_{out_filename}")
+            print(f"⚠️ Warning: Failed to save to target directory ({e}). Saved to: {save_path}")
+            pil_img.save(save_path)
         return processed_faces, save_path
 
     def predict_directory(self, image_dir: str, output_dir: str = "./inference_results"):
