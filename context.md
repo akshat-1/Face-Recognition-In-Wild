@@ -294,13 +294,13 @@ graph LR
 
 ```mermaid
 flowchart TD
-    RawImg[Input Wild Image] --> YOLOFace[YOLOv8-Face Detector]
-    YOLOFace --> BBoxes[Bounding Boxes & 5 Facial Landmarks]
+    RawImg[Input Wild Image] --> FasterRCNN[Stage 1: Faster-RCNN ResNet-50 FPN Base Pretrained Model]
+    FasterRCNN --> BBoxes[High-Precision Bounding Boxes & 5 Facial Landmarks]
     
     subgraph Preprocessing & Feature Extraction
         BBoxes --> LNetANet[ANet Attribute & Occlusion Mask Parser]
         LNetANet --> OccCheck{Occlusion / Extreme Pose?}
-        OccCheck -- Yes: Yaw > 30 deg / Mask Present --> PIM[PIM Frontalization & D2SC-GAN Super-Res]
+        OccCheck -- Yes: Yaw > 20 deg / Mask Present --> PIM[PIM Frontalization & D2SC-GAN Super-Res]
         OccCheck -- No: Normal Pose & Unoccluded --> Align[Standard Affine Alignment]
         PIM --> Align
         Align --> BackboneChoice{Select Backbone Architecture}
@@ -329,8 +329,10 @@ flowchart TD
 ```
 
 ### Module Breakdown of Proposed Solution
-1. **Face Detection & Landmark Alignment (YOLOv8-Face + LNet)**:
-   - Single-stage YOLOv8-Face trained on WIDER FACE provides candidate bounding boxes $[x_{min}, y_{min}, x_{max}, y_{max}]$ and 5 landmark points (eyes, nose, mouth corners) even in dense crowds.
+1. **Base Pretrained Detector & Framework Extension (`FasterRCNNFaceDetector`)**:
+   - Official pretrained **Faster-RCNN ResNet-50 FPN** (`torchvision.models.detection.fasterrcnn_resnet50_fpn`) serves as the base general bounding box proposal generator.
+   - Dual SOTA refiner (**MTCNN** + **OpenCV YuNet ONNX**) aligns facial landmarks and eliminates false-positive box clutter.
+   - Region proposal crops from Faster-RCNN are passed downstream into our framework (`ANetAttributeParser`, `PIMFrontalizationGAN`, `ResNet100Backbone`, `DDRCClassifier`) to extend the pretrained general model for unconstrained wild face recognition.
 2. **Semantic Occlusion Parsing (ANet Component)**:
    - Predicts 40 attribute logits. Detects active occluders (`Wearing_Mask`, `Wearing_Sunglasses`, `Wearing_Hat`). Generates a binary spatial weight mask $M_{spatial}$.
 3. **Generative Pose Normalization (PIM Module)**:
