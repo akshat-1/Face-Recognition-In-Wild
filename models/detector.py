@@ -226,64 +226,89 @@ class SOTAFaceDetector(nn.Module):
         else:
             self.yunet_path = None
 
-    def forward(self, img_tensor: torch.Tensor, score_threshold: float = 0.4):
+    def forward(self, img_tensor: torch.Tensor, score_threshold: float = 0.4, enable_tta: bool = False):
         device = img_tensor.device
         B, C, H, W = img_tensor.shape
-        img_np = ((img_tensor[0].permute(1, 2, 0).detach().cpu().numpy() + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
         
-        try:
-            from PIL import Image
-            img_pil = Image.fromarray(img_np)
-        except Exception:
-            img_pil = None
-            
-        boxes_list, scores_list, lms_list = [], [], []
-        
-        # Stage 1: MTCNN Pretrained Face Localizer
-        if self.mtcnn is not None and img_pil is not None:
-            try:
-                boxes_m, probs_m, lms_m = self.mtcnn.detect(img_pil, landmarks=True)
-                if boxes_m is not None and len(boxes_m) > 0:
-                    for idx in range(len(boxes_m)):
-                        if probs_m[idx] >= score_threshold:
-                            boxes_list.append(np.array(boxes_m[idx], dtype=np.float32))
-                            scores_list.append(float(probs_m[idx]))
-                            lm_val = np.array(lms_m[idx], dtype=np.float32) if (lms_m is not None and len(lms_m) > idx) else np.zeros((5, 2), dtype=np.float32)
-                            lms_list.append(lm_val)
-            except Exception:
-                pass
+        # Multi-scale Image Pyramid Test-Time Augmentation (TTA)
+        scales = [0.75, 1.0, 1.25] if enable_tta else [1.0]
+        accum_boxes, accum_scores, accum_lms = [], [], []
 
-        # Stage 2: OpenCV YuNet SOTA ONNX Face Localizer
-        if len(boxes_list) == 0 and self.yunet_path is not None:
-            try:
-                img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
-                yunet = cv2.FaceDetectorYN.create(self.yunet_path, '', (W, H), score_threshold=score_threshold, nms_threshold=0.3)
-                _, faces = yunet.detect(img_bgr)
-                if faces is not None:
-                    for f in faces:
-                        box = np.array([f[0], f[1], f[0] + f[2], f[1] + f[3]], dtype=np.float32)
-                        score = float(f[14])
-                        lms = np.array(f[4:14].reshape(5, 2), dtype=np.float32)
-                        boxes_list.append(box)
-                        scores_list.append(score)
-                        lms_list.append(lms)
-            except Exception:
-                pass
-
-        # Stage 3: LNet Pure PyTorch Fallback
-        if len(boxes_list) == 0:
-            boxes_lnet, scores_lnet, lms_lnet = self.fallback_lnet(img_tensor, score_threshold=score_threshold)
-            if boxes_lnet.size(0) > 0:
-                return boxes_lnet, scores_lnet, lms_lnet
+        for scale in scales:
+            if scale != 1.0:
+                scaled_h, scaled_w = max(32, int(H * scale)), max(32, int(W * scale))
+                cur_tensor = F.interpolate(img_tensor, size=(scaled_h, scaled_w), mode='bilinear', align_corners=False)
             else:
-                boxes_tensor = torch.tensor([[0.0, 0.0, float(W), float(H)]], device=device, dtype=torch.float32)
-                scores_tensor = torch.tensor([0.5], device=device, dtype=torch.float32)
-                lms_tensor = torch.zeros((1, 5, 2), device=device, dtype=torch.float32)
-                return boxes_tensor, scores_tensor, lms_tensor
+                cur_tensor = img_tensor
+                scaled_h, scaled_w = H, W
+
+            img_np = ((cur_tensor[0].permute(1, 2, 0).detach().cpu().numpy() + 1.0) * 127.5).clip(0, 255).astype(np.uint8)
+            
+            try:
+                from PIL import Image
+                img_pil = Image.fromarray(img_np)
+            except Exception:
+                img_pil = None
+                
+            boxes_list, scores_list, lms_list = [], [], []
+            
+            # Stage 1: MTCNN Pretrained Face Localizer
+            if self.mtcnn is not None and img_pil is not None:
+                try:
+                    boxes_m, probs_m, lms_m = self.mtcnn.detect(img_pil, landmarks=True)
+                    if boxes_m is not None and len(boxes_m) > 0:
+                        for idx in range(len(boxes_m)):
+                            if probs_m[idx] >= score_threshold:
+                                box_scaled = np.array(boxes_m[idx], dtype=np.float32) / float(scale)
+                                boxes_list.append(box_scaled)
+                                scores_list.append(float(probs_m[idx]))
+                                lm_val = (np.array(lms_m[idx], dtype=np.float32) / float(scale)) if (lms_m is not None and len(lms_m) > idx) else np.zeros((5, 2), dtype=np.float32)
+                                lms_list.append(lm_val)
+                except Exception:
+                    pass
+
+            # Stage 2: OpenCV YuNet SOTA ONNX Face Localizer
+            if len(boxes_list) == 0 and self.yunet_path is not None:
+                try:
+                    img_bgr = cv2.cvtColor(img_np, cv2.COLOR_RGB2BGR)
+                    yunet = cv2.FaceDetectorYN.create(self.yunet_path, '', (scaled_w, scaled_h), score_threshold=score_threshold, nms_threshold=0.3)
+                    _, faces = yunet.detect(img_bgr)
+                    if faces is not None:
+                        for f in faces:
+                            box = np.array([f[0], f[1], f[0] + f[2], f[1] + f[3]], dtype=np.float32) / float(scale)
+                            score = float(f[14])
+                            lms = np.array(f[4:14].reshape(5, 2), dtype=np.float32) / float(scale)
+                            boxes_list.append(box)
+                            scores_list.append(score)
+                            lms_list.append(lms)
+                except Exception:
+                    pass
+
+            # Stage 3: LNet Pure PyTorch Fallback
+            if len(boxes_list) == 0:
+                boxes_lnet, scores_lnet, lms_lnet = self.fallback_lnet(cur_tensor, score_threshold=score_threshold)
+                if boxes_lnet.size(0) > 0:
+                    accum_boxes.append(boxes_lnet / float(scale))
+                    accum_scores.append(scores_lnet)
+                    accum_lms.append(lms_lnet / float(scale))
+            else:
+                accum_boxes.append(torch.tensor(np.array(boxes_list, dtype=np.float32), device=device, dtype=torch.float32))
+                accum_scores.append(torch.tensor(np.array(scores_list, dtype=np.float32), device=device, dtype=torch.float32))
+                accum_lms.append(torch.tensor(np.array(lms_list, dtype=np.float32), device=device, dtype=torch.float32))
+
+        if len(accum_boxes) > 0 and accum_boxes[0].size(0) > 0:
+            cat_boxes = torch.cat(accum_boxes, dim=0)
+            cat_scores = torch.cat(accum_scores, dim=0)
+            cat_lms = torch.cat(accum_lms, dim=0)
+            if cat_boxes.size(0) > 1:
+                final_boxes, final_scores = soft_nms_pytorch(cat_boxes, cat_scores, score_threshold=score_threshold)
+                return final_boxes, final_scores, cat_lms[:final_boxes.size(0)]
+            else:
+                return cat_boxes, cat_scores, cat_lms
         else:
-            boxes_tensor = torch.tensor(np.array(boxes_list, dtype=np.float32), device=device, dtype=torch.float32)
-            scores_tensor = torch.tensor(np.array(scores_list, dtype=np.float32), device=device, dtype=torch.float32)
-            lms_tensor = torch.tensor(np.array(lms_list, dtype=np.float32), device=device, dtype=torch.float32)
+            boxes_tensor = torch.tensor([[0.0, 0.0, float(W), float(H)]], device=device, dtype=torch.float32)
+            scores_tensor = torch.tensor([0.5], device=device, dtype=torch.float32)
+            lms_tensor = torch.zeros((1, 5, 2), device=device, dtype=torch.float32)
             return boxes_tensor, scores_tensor, lms_tensor
 
 class FasterRCNNFaceDetector(nn.Module):
