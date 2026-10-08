@@ -16,8 +16,9 @@ Real-world ("in the wild") face recognition and detection present severe multi-m
 6. **Large Unlabeled Wild Collections**: Leveraging millions of unannotated occluded wild faces (FMD dataset, COVID face detection) without introducing pseudo-label noise.
 
 ### Unified System Framework: OccuPose-BroadDictNet
-To tackle these challenges, **OccuPose-BroadDictNet** integrates five state-of-the-art deep learning methodologies into a production-grade PyTorch system:
-- **Dual SOTA Feature Backbones (`models/backbone.py`)**: Official `IResNet-100` (CNN baseline) and `FaceVisionTransformer` (`vit_face_base` / `vit_face_large` / TransFace) with Multi-Head Self-Attention ($\text{Softmax}(QK^T / \sqrt{d_k})V$) for dynamic token routing around occluded facial regions.
+To tackle these challenges, **OccuPose-BroadDictNet** integrates state-of-the-art deep learning methodologies into a production-grade PyTorch system:
+- **Base Pretrained Detector & Framework Extension (`models/detector.py`)**: Official pretrained `FasterRCNN` (`fasterrcnn_resnet50_fpn`) base bounding box regression model coupled with `SOTAFaceDetector` (MTCNN + OpenCV YuNet ONNX) for zero-false-positive precision.
+- **Dual SOTA Feature Backbones (`models/backbone.py`)**: Official `IResNet-100` (CNN baseline) and `FaceVisionTransformer` (`vit_face_base` / TransFace) with Multi-Head Self-Attention ($\text{Softmax}(QK^T / \sqrt{d_k})V$) for dynamic token routing around occluded facial regions.
 - **Semi-Supervised GCN Sub-Graph Clustering (`models/gcn_cluster.py`)**: Graph Convolutional Link Predictor and BFS connected component pseudo-labeler to exploit unlabeled wild faces (FMD, COVID faces) alongside labeled datasets (ROF, LFW, WIDER).
 - **Adaptive Curriculum Loss & Negative Queueing (`losses/`)**: `CurricularFaceLoss` with EMA parameter $t$ and DDP `dist.all_reduce` synchronization, coupled with `BroadFaceMemoryQueue` ($N_q = 32,768$) for large-batch contrast.
 - **Generative Pose & Quality Transformation (`models/pim_frontalizer.py`)**: `PIMFrontalizationGAN` for off-axis profile faces ($> 20^\circ$ yaw) with bilateral symmetry blending, and `D2SCGANSuperRes` dual-channel super-resolution.

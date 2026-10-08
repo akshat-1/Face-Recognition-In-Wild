@@ -137,7 +137,7 @@ class TestOccuPoseBroadDictNet(unittest.TestCase):
         
         img = torch.randn(1, 3, 224, 224, device=self.device)
         
-        results = pipeline(img, score_threshold=0.1)
+        results = pipeline(img, score_threshold=0.4)
         self.assertIsInstance(results, list)
         self.assertGreater(len(results), 0)
         
