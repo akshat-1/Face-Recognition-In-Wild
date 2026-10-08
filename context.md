@@ -394,10 +394,14 @@ flowchart TD
 ```
 Face_Recognition_In_Wild/
 ├── context.md                    # Synthesized literature review & system architecture
+├── context_for_ai.md             # Master AI handoff document
 ├── config.py                     # Dataclass configuration system for hyperparameters & paths
-├── dataset.py                    # Real wild dataset loader for WebFace-OCC, LFW & CelebA
+├── dataset.py                    # Real wild dataset loader for Labeled & Unlabeled streams
+├── predict_occluded_faces.py     # End-to-end full framework inference CLI engine (outputs predicted_[image])
+├── predict_raw_faster_rcnn.py    # Raw base Faster-RCNN pretrained model standalone CLI (outputs raw_prediction_[image])
+├── predict_pretrained_detector.py # Pretrained MTCNN + YuNet face detector standalone CLI (outputs to results/pretrained)
 ├── models/
-│   ├── detector.py               # WildFaceDetector with Soft-NMS
+│   ├── detector.py               # FasterRCNNFaceDetector (ResNet-50 FPN base) & SOTAFaceDetector (MTCNN + YuNet)
 │   ├── anet_attribute.py         # ANet multi-task 40-attribute & occlusion mask network
 │   ├── pim_frontalizer.py        # PIM Frontalization Generator & D2SC-GAN
 │   ├── backbone.py               # SOTA IResNet-100 (3, 13, 30, 3) feature extractor
@@ -410,7 +414,7 @@ Face_Recognition_In_Wild/
 ├── train.py                      # Multi-stage training pipeline with AMP mixed precision
 ├── main.py                       # Training and inference demonstration entrypoint
 └── tests/
-    └── test_robustness.py        # Comprehensive unit & integration robustness test suite
+    └── test_robustness.py        # Complete 10/10 PyTorch unit & integration robustness test suite
 ```
 
 ---
@@ -440,8 +444,8 @@ The execution flow of **OccuPose-BroadDictNet** follows a clean 5-stage pipeline
 
 ```mermaid
 flowchart TD
-    Input[Input Wild Image] --> Stage1[Stage 1: WildFaceDetector]
-    Stage1 --> BBoxes[Bounding Boxes & Scores via Soft-NMS]
+    Input[Input Wild Image] --> Stage1[Stage 1: FasterRCNNFaceDetector Base Pretrained Model]
+    Stage1 --> BBoxes[Bounding Boxes & Facial Landmarks]
     
     subgraph Stage 2: Feature Alignment & Occlusion Parsing
         BBoxes --> Crop[Face Region Crops 112x112]
@@ -471,16 +475,16 @@ flowchart TD
         Gate -- No --> Unknown[Identity = 'unknown' & Confidence]
     end
     
-    Known --> Output[Annotated Image Output]
+    Known --> Output[Annotated Image Output & CSV Log]
     Unknown --> Output
 ```
 
 ### 9.2 Step-by-Step Code Execution Path
 
-1. **Detection & Anchor Filtering (`models/detector.py`)**:
-   - `WildFaceDetector` processes the input image tensor $(1, 3, H, W)$ through convolutional feature stems.
-   - Raw bounding box predictions are rescaled to image dimensions.
-   - Candidate boxes with score $> \tau_{det}$ are filtered using **Soft-NMS with Gaussian decay** (`soft_nms_pytorch`). Unlike standard greedy NMS, Soft-NMS decays overlapping box scores rather than dropping them, preserving valid partially-occluded overlapping faces in dense crowds.
+1. **Pretrained Base Bounding Box Detection & Refinement (`models/detector.py`)**:
+   - `FasterRCNNFaceDetector` processes the input image tensor through official pretrained **Faster-RCNN ResNet-50 FPN** (`torchvision.models.detection.fasterrcnn_resnet50_fpn`) to extract general candidate region proposal bounding boxes.
+   - Dual SOTA refiner (**MTCNN** + **OpenCV YuNet ONNX**) aligns facial landmarks and eliminates false-positive box clutter.
+   - Candidate boxes are filtered using **Soft-NMS with Gaussian decay** (`soft_nms_pytorch`). Unlike standard greedy NMS, Soft-NMS decays overlapping box scores rather than dropping them, preserving valid partially-occluded overlapping faces in dense crowds.
 
 2. **Semantic Attribute & Spatial Occlusion Parsing (`models/anet_attribute.py`)**:
    - Each detected face patch is cropped and resized to $(112, 112)$.
