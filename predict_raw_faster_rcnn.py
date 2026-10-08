@@ -17,7 +17,7 @@ def generate_predictions_grid(output_dir: str, grid_filename: str = "all_predict
     if os.path.exists(output_dir):
         for root, _, files in os.walk(output_dir):
             for f in sorted(files):
-                if f.startswith("predicted_") and f.lower().endswith(VALID_IMAGE_EXTENSIONS):
+                if (f.startswith("raw_prediction_") or f.startswith("predicted_")) and f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                     pred_files.append(os.path.join(root, f))
                     
     if len(pred_files) == 0:
@@ -56,9 +56,12 @@ def generate_predictions_grid(output_dir: str, grid_filename: str = "all_predict
             pimg = pimg.resize((tw, th), Image.BILINEAR)
             grid_img.paste(pimg, (cell_x, cell_y + header_h))
             
-            fname = os.path.basename(img_path).replace("predicted_", "")
+            fname_clean = os.path.basename(img_path)
+            for pfx in ["raw_prediction_", "predicted_"]:
+                if fname_clean.startswith(pfx):
+                    fname_clean = fname_clean[len(pfx):]
             draw.rectangle([cell_x, cell_y, cell_x + tw, cell_y + header_h], fill=(220, 225, 230))
-            draw.text((cell_x + 5, cell_y + 8), f"#{idx+1}: {fname[:25]}", fill=(10, 20, 40))
+            draw.text((cell_x + 5, cell_y + 8), f"#{idx+1}: {fname_clean[:25]}", fill=(10, 20, 40))
             
             draw.rectangle([cell_x, cell_y + header_h, cell_x + tw, cell_y + header_h + th], outline=(180, 190, 200), width=2)
         except Exception:
@@ -169,7 +172,12 @@ def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results
                 draw.rectangle([x1, font_box_y1, x1 + len(label_text) * 8, max(0, y1)], fill=box_color)
                 draw.text((x1 + 3, font_box_y1 + 2), label_text, fill=(255, 255, 255))
                 
-        out_filename = f"predicted_{fname}"
+        clean_fname = fname
+        for pfx in ["raw_prediction_", "predicted_"]:
+            if clean_fname.startswith(pfx):
+                clean_fname = clean_fname[len(pfx):]
+                
+        out_filename = f"raw_prediction_{clean_fname}"
         save_path = os.path.join(output_dir, out_filename)
         pil_img.save(save_path, quality=95)
         
