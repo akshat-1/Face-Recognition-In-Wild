@@ -16,7 +16,12 @@ list_landmarks_align_celeba.csv
 Face_Dataset/
 Test_dataser/
 WIDER_val/
-wider_face_spit/
+wider_face_split/
+wider_face_val_bbx_gt.txt
+widerface_eval/
+widerface_txt_predictions/
+widerface_industry_metrics.csv
+widerface_eval_summary.csv
 *.zip
 *.tar
 *.gz
