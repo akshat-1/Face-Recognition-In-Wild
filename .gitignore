@@ -1,7 +1,60 @@
+# Python & Virtual Envs
 __pycache__/
 *.pyc
-*.pt
-.venv/
+*.pyo
+*.pyd
+.venv*/
+venv*/
+env/
+ENV/
+
+# Large Datasets & Zip Downloads
+list_attr_celeba.csv
+list_bbox_celeba.csv
+list_eval_partition.csv
+list_landmarks_align_celeba.csv
 Face_Dataset/
-scratch/
+Test_dataser/
+*.zip
+*.tar
+*.gz
+*.zst
+
+# Model Checkpoints & Weights
+checkpoints/
+weights/*.pt
+weights/*.pth
+weights/*.onnx
+!weights/face_detection_yunet_2023mar.onnx
+
+# Prediction Output Folders & Generated Artifacts
+results/
+inference_results/
+evaluation_plots/
+predicted_*.jpg
+predicted_*.png
+raw_prediction_*.jpg
+raw_prediction_*.png
+all_predictions_grid.jpg
+raw_predictions_grid.jpg
+test_predictions_summary.csv
+raw_test_predictions_summary.csv
+
+# Loose Test Images & Temporary Artifacts
+0JIHPYBL1P7W.jpg
+1 (10).jpg
+complex103.jpg
+complex11.jpg
+complex13.jpg
+complex14.jpg
+complex789.jpg
+classes.txt
 extracted_papers/
+scratch/
+
+# IDE & System Files
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.swo
