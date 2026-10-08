@@ -257,6 +257,13 @@ graph LR
 
 ---
 
+## 2.8 Segment Anything Model for Wild Face Foreground Segmentation (SAM)
+* **Authors**: Alexander Kirillov, Eric Mintun, Nikhila Ravi, Hanzi Mao, Chloe Rolland, Laura Gustafson, Tushar Vekhman, Ross Girshick, Trevor Darrell, Piotr Dollár, Alyosha Efros (ICCV 2023 / arXiv:2304.02643)
+* **Core Innovation**: Promptable ViT Image Encoder, Random Gaussian Positional Encodings, and Bi-Directional Two-Way Transformer Decoder generating pixel-level foreground segmentation masks $M_{\text{SAM}} \in [0, 1]^{H \times W}$.
+* **Function in Framework**: Isolates facial geometry from background clutter and crowd noise before passing face crops to feature backbones, filtering non-face bounding box noise.
+
+---
+
 # 3. Comparative Synthesis & Synergy Matrix
 
 | Technique | Primary Strengths | Weaknesses / Bottlenecks | Synthesis Function in Proposed Solution |
@@ -295,11 +302,16 @@ graph LR
 ```mermaid
 flowchart TD
     RawImg[Input Wild Image] --> FasterRCNN[Stage 1: Faster-RCNN ResNet-50 FPN Base Pretrained Model]
-    FasterRCNN --> BBoxes[High-Precision Bounding Boxes & 5 Facial Landmarks]
+    FasterRCNN --> TTA[Multi-Scale Image Pyramid TTA: 0.75x, 1.0x, 1.25x & Soft-NMS]
+    TTA --> BBoxes[High-Precision Bounding Boxes & Landmarks via Wing Loss]
     
-    subgraph Preprocessing & Feature Extraction
-        BBoxes --> LNetANet[ANet Attribute & Occlusion Mask Parser]
-        LNetANet --> OccCheck{Occlusion / Extreme Pose?}
+    subgraph Preprocessing, SAM Segmentation & Occlusion Parsing
+        BBoxes --> SAM[SAM Face Segmentor SAMFaceSegmentor]
+        SAM --> SAMMask[Foreground Face Mask M_SAM in 0, 1]
+        BBoxes --> LNetANet[ANet Attribute & Spatial Mask Parser]
+        LNetANet --> SpatialMask[7x7 Spatial Occlusion Map M_spatial]
+        SAMMask --> SegmentedCrop[Segmented Crop: Image * M_SAM]
+        SegmentedCrop --> OccCheck{Occlusion / Extreme Pose?}
         OccCheck -- Yes: Yaw > 20 deg / Mask Present --> PIM[PIM Frontalization & D2SC-GAN Super-Res]
         OccCheck -- No: Normal Pose & Unoccluded --> Align[Standard Affine Alignment]
         PIM --> Align
@@ -318,21 +330,24 @@ flowchart TD
 
     subgraph Open-Set Classifier & Output Generation
         Embed --> DDRC[DDRC Sparse Dictionary & Residual Reconstructor]
-        LNetANet -. Occlusion Prior .-> DDRC
-        DDRC --> ResidualCheck{Min Residual r_k <= tau AND Margin >= delta?}
+        SpatialMask -. Dynamic Threshold tau_adaptive .-> DDRC
+        DDRC --> ResidualCheck{Min Residual r_k <= tau_adaptive AND Margin >= delta?}
         ResidualCheck -- Yes --> KnownID[Identity = Person Name & Confidence Score]
         ResidualCheck -- No --> UnknownID[Identity = 'unknown' & Confidence Score]
     end
 
-    KnownID --> FinalOutput[Annotated Output Image with BBoxes & Labels]
+    KnownID --> FinalOutput[Annotated Output Image & CSV Report]
     UnknownID --> FinalOutput
 ```
 
 ### Module Breakdown of Proposed Solution
 1. **Base Pretrained Detector & Framework Extension (`FasterRCNNFaceDetector`)**:
    - Official pretrained **Faster-RCNN ResNet-50 FPN** (`torchvision.models.detection.fasterrcnn_resnet50_fpn`) serves as the base general bounding box proposal generator.
-   - Dual SOTA refiner (**MTCNN** + **OpenCV YuNet ONNX**) aligns facial landmarks and eliminates false-positive box clutter.
-   - Region proposal crops from Faster-RCNN are passed downstream into our framework (`ANetAttributeParser`, `PIMFrontalizationGAN`, `ResNet100Backbone`, `DDRCClassifier`) to extend the pretrained general model for unconstrained wild face recognition.
+   - Dual SOTA refiner (**MTCNN** + **OpenCV YuNet ONNX**) aligns facial landmarks using **Wing Loss** and eliminates false-positive box clutter.
+   - Multi-scale image pyramid TTA ($[0.75\times, 1.0\times, 1.25\times]$) ensures high recall on tiny faces ($< 16\text{ px}$) and extreme close-ups.
+2. **SAM Foreground Face Segmentation (`SAMFaceSegmentor`)**:
+   - Implements 100% faithful Meta AI Segment Anything Model (SAM) architecture (ViT encoder stem, random Gaussian PE matrix, Two-Way Transformer Decoder, and dynamic hypernetwork MLPs).
+   - Generates pixel-level foreground segmentation masks $M_{\text{SAM}} \in [0, 1]^{H \times W}$, filtering background clutter and crowd noise.
 2. **Semantic Occlusion Parsing (ANet Component)**:
    - Predicts 40 attribute logits. Detects active occluders (`Wearing_Mask`, `Wearing_Sunglasses`, `Wearing_Hat`). Generates a binary spatial weight mask $M_{spatial}$.
 3. **Generative Pose Normalization (PIM Module)**:
