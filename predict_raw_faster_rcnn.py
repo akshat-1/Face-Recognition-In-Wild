@@ -188,8 +188,23 @@ def run_raw_faster_rcnn_inference(image_dir: str, output_dir: str = "./results/r
         print(f"✓ Composite grid figure saved to   : {grid_path}")
     print(f"========================================================================\n")
 
+def main():
+    import argparse
+    parser = argparse.ArgumentParser(description="Raw Pretrained Faster-RCNN Base Detector Inference")
+    parser.add_argument("--image_path", type=str, default="", help="Path to single image file")
+    parser.add_argument("--image_dir", type=str, default="", help="Path to directory containing images")
+    parser.add_argument("--output_dir", type=str, default="./results/raw_pretrained", help="Output directory")
+    args = parser.parse_args()
+    
+    target_path = args.image_path if args.image_path else (args.image_dir if args.image_dir else "./Test_dataser")
+    if os.path.isfile(target_path):
+        # Process single image file
+        image_dir = os.path.dirname(os.path.abspath(target_path))
+        fname = os.path.basename(target_path)
+        print(f"Running raw base model inference on single image: {fname}")
+        run_raw_faster_rcnn_inference(image_dir=image_dir, output_dir=args.output_dir)
+    else:
+        run_raw_faster_rcnn_inference(image_dir=target_path, output_dir=args.output_dir)
+
 if __name__ == "__main__":
-    run_raw_faster_rcnn_inference(
-        image_dir="/home/akshat/Documents/Face_Recognition_In_Wild/Test_dataser",
-        output_dir="/home/akshat/Documents/Face_Recognition_In_Wild/results/raw_pretrained"
-    )
+    main()
