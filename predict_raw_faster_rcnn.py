@@ -69,13 +69,13 @@ def generate_predictions_grid(output_dir: str, grid_filename: str = "all_predict
     print(f"✓ Saved composite grid figure to: {grid_path}")
     return grid_path
 
-def run_raw_faster_rcnn_inference(image_dir: str, output_dir: str = "./results/raw_pretrained"):
+def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results/raw_pretrained"):
     """
     Runs inference using ONLY the raw pretrained Faster-RCNN (ResNet-50 FPN COCO) model.
     """
     print(f"========================================================================")
     print(f"--- Raw Pretrained Faster-RCNN (ResNet-50 FPN) Inference ---")
-    print(f"Input Directory: {image_dir} | Output Directory: {output_dir}")
+    print(f"Target Path: {target_path} | Output Directory: {output_dir}")
     print(f"========================================================================\n")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
@@ -85,10 +85,13 @@ def run_raw_faster_rcnn_inference(image_dir: str, output_dir: str = "./results/r
     os.makedirs(output_dir, exist_ok=True)
     
     image_files = []
-    for root, _, files in os.walk(image_dir):
-        for f in sorted(files):
-            if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
-                image_files.append(os.path.join(root, f))
+    if os.path.isfile(target_path):
+        image_files = [target_path]
+    elif os.path.isdir(target_path):
+        for root, _, files in os.walk(target_path):
+            for f in sorted(files):
+                if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
+                    image_files.append(os.path.join(root, f))
                 
     csv_path = os.path.join(output_dir, "test_predictions_summary.csv")
     summary_records = []
@@ -197,14 +200,7 @@ def main():
     args = parser.parse_args()
     
     target_path = args.image_path if args.image_path else (args.image_dir if args.image_dir else "./Test_dataser")
-    if os.path.isfile(target_path):
-        # Process single image file
-        image_dir = os.path.dirname(os.path.abspath(target_path))
-        fname = os.path.basename(target_path)
-        print(f"Running raw base model inference on single image: {fname}")
-        run_raw_faster_rcnn_inference(image_dir=image_dir, output_dir=args.output_dir)
-    else:
-        run_raw_faster_rcnn_inference(image_dir=target_path, output_dir=args.output_dir)
+    run_raw_faster_rcnn_inference(target_path=target_path, output_dir=args.output_dir)
 
 if __name__ == "__main__":
     main()
