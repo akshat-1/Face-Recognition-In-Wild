@@ -180,20 +180,25 @@ def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results
         out_filename = f"raw_prediction_{clean_fname}"
         save_path = os.path.join(output_dir, out_filename)
         pil_img.save(save_path, quality=95)
+        print(f"   ↳ Saved annotated output image to: {save_path}")
         
     # Save CSV Summary
+    csv_path = os.path.join(output_dir, "raw_test_predictions_summary.csv")
     fieldnames = ['image_filename', 'num_boxes_detected', 'box_id', 'faster_rcnn_score', 'box_coords']
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
         writer.writerows(summary_records)
         
-    grid_path = generate_predictions_grid(output_dir, grid_filename="all_predictions_grid.jpg")
+    grid_path = generate_predictions_grid(output_dir, grid_filename="raw_predictions_grid.jpg")
     
     elapsed = time.time() - start_time
     print(f"\n========================================================================")
     print(f"✓ Completed raw Faster-RCNN inference in {elapsed:.2f}s ({elapsed/max(1, len(image_files)):.2f}s/img)")
-    print(f"✓ Output annotated images saved to : {output_dir}")
+    if len(image_files) == 1:
+        print(f"✓ Output annotated image saved to  : {save_path}")
+    else:
+        print(f"✓ Output annotated images saved to : {output_dir}")
     print(f"✓ CSV summary report saved to      : {csv_path}")
     if grid_path:
         print(f"✓ Composite grid figure saved to   : {grid_path}")
