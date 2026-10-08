@@ -15,6 +15,8 @@ list_eval_partition.csv
 list_landmarks_align_celeba.csv
 Face_Dataset/
 Test_dataser/
+WIDER_val/
+wider_face_spit/
 *.zip
 *.tar
 *.gz
