@@ -160,6 +160,50 @@ class WiderFaceEvaluator:
         print(f"✓ Saved WIDER FACE industry metrics CSV report to : {metrics_csv_path}")
         print(f"✓ Saved WIDER FACE format TXT prediction files to  : {txt_output_dir}\n")
 
+def download_widerface_dataset(target_dir: str = "./WIDER_val"):
+    """
+    Automated Downloader Helper for WIDER FACE Validation Set & Ground Truth.
+    Downloads and extracts WIDER FACE validation images automatically if requested.
+    """
+    import urllib.request
+    import zipfile
+    
+    os.makedirs(target_dir, exist_ok=True)
+    print(f"========================================================================")
+    print(f"--- WIDER FACE Automated Dataset Downloader ---")
+    print(f"Target Directory: {target_dir}")
+    print(f"========================================================================\n")
+    
+    val_images_url = "https://github.com/nelsonliu/widerface-annotations/releases/download/v1.0/WIDER_val.zip"
+    val_gt_url = "https://github.com/nelsonliu/widerface-annotations/releases/download/v1.0/wider_face_split.zip"
+    
+    zip_path = os.path.join(target_dir, "WIDER_val.zip")
+    gt_path = os.path.join(target_dir, "wider_face_split.zip")
+    
+    if not os.path.exists(os.path.join(target_dir, "images")):
+        print("Downloading WIDER FACE Validation Images (WIDER_val.zip)...")
+        try:
+            urllib.request.urlretrieve(val_images_url, zip_path)
+            print("Extracting WIDER_val.zip...")
+            with zipfile.ZipFile(zip_path, 'r') as zip_ref:
+                zip_ref.extractall(target_dir)
+            print("✓ WIDER FACE Validation Images extracted successfully!")
+        except Exception as e:
+            print(f"⚠️ Direct mirror download failed: {e}")
+            print("Official academic download links:")
+            print("  - Academic Official Site: http://shuoyang1213.me/WIDERFACE/")
+            print("  - Kaggle WIDER FACE: https://www.kaggle.com/datasets/gpreda/wider-face-for-face-detection")
+            
+    if not os.path.exists(gt_path):
+        try:
+            print("Downloading Ground Truth Annotations (wider_face_split.zip)...")
+            urllib.request.urlretrieve(val_gt_url, gt_path)
+            with zipfile.ZipFile(gt_path, 'r') as zip_ref:
+                zip_ref.extractall(target_dir)
+            print("✓ Ground truth annotations extracted successfully!")
+        except Exception as e:
+            pass
+
 def main():
     import argparse
     parser = argparse.ArgumentParser(description="Single-Step WIDER FACE Industry Standard Benchmark Evaluator")
@@ -167,10 +211,17 @@ def main():
     parser.add_argument("--weights_dir", type=str, default="./weights", help="Path to weights folder")
     parser.add_argument("--output_dir", type=str, default="./results/widerface_eval", help="Directory to save evaluation metrics")
     parser.add_argument("--score_threshold", type=float, default=0.3, help="Confidence cutoff for face proposals")
+    parser.add_argument("--download", action="store_true", help="Automatically download WIDER FACE validation dataset")
     args = parser.parse_args()
 
+    if args.download:
+        download_widerface_dataset(target_dir="./WIDER_val")
+        image_dir = "./WIDER_val/images" if os.path.exists("./WIDER_val/images") else args.image_dir
+    else:
+        image_dir = args.image_dir
+
     evaluator = WiderFaceEvaluator(weights_dir=args.weights_dir)
-    evaluator.evaluate_and_benchmark(image_dir=args.image_dir, output_dir=args.output_dir, score_threshold=args.score_threshold)
+    evaluator.evaluate_and_benchmark(image_dir=image_dir, output_dir=args.output_dir, score_threshold=args.score_threshold)
 
 if __name__ == "__main__":
     main()
