@@ -305,7 +305,7 @@ flowchart TD
     FasterRCNN --> TTA[Multi-Scale Image Pyramid TTA: 0.75x, 1.0x, 1.25x & Soft-NMS]
     TTA --> BBoxes[High-Precision Bounding Boxes & Landmarks via Wing Loss]
     
-    subgraph Preprocessing, SAM Segmentation & Occlusion Parsing
+    subgraph Preprocessing ["Preprocessing, SAM Segmentation and Occlusion Parsing"]
         BBoxes --> SAM[SAM Face Segmentor SAMFaceSegmentor]
         SAM --> SAMMask[Foreground Face Mask M_SAM in 0, 1]
         BBoxes --> LNetANet[ANet Attribute & Spatial Mask Parser]
@@ -320,7 +320,7 @@ flowchart TD
         BackboneChoice -- Transformer Option --> ViTFace[FaceVisionTransformer ViT-Face / TransFace]
     end
 
-    subgraph Training & Loss Optimization
+    subgraph Training ["Training and Loss Optimization"]
         IResNet --> Embed[512-d Feature Vector f]
         ViTFace --> Embed
         Embed --> Curricular[CurricularFace Adaptive Margin Loss]
@@ -328,7 +328,7 @@ flowchart TD
         BroadQueue --> Curricular
     end
 
-    subgraph Open-Set Classifier & Output Generation
+    subgraph OpenSet ["Open-Set Classifier and Output Generation"]
         Embed --> DDRC[DDRC Sparse Dictionary & Residual Reconstructor]
         SpatialMask -. Dynamic Threshold tau_adaptive .-> DDRC
         DDRC --> ResidualCheck{Min Residual r_k <= tau_adaptive AND Margin >= delta?}
@@ -462,19 +462,19 @@ flowchart TD
     Input[Input Wild Image] --> Stage1[Stage 1: FasterRCNNFaceDetector Base Pretrained Model]
     Stage1 --> BBoxes[Bounding Boxes & Facial Landmarks]
     
-    subgraph Stage 2: Feature Alignment & Occlusion Parsing
+    subgraph Stage2 ["Stage 2: Feature Alignment and Occlusion Parsing"]
         BBoxes --> Crop[Face Region Crops 112x112]
         Crop --> ANet[ANet Attribute & Spatial Mask Parser]
         ANet --> OccCheck{Major Occlusion or Yaw > 20°?}
     end
     
-    subgraph Stage 3: Generative Pose & Quality Enhancement
+    subgraph Stage3 ["Stage 3: Generative Pose and Quality Enhancement"]
         OccCheck -- Yes --> PIM[PIM Frontalizer & D2SC-GAN Super-Res]
         OccCheck -- No --> BackboneInput[Aligned Unoccluded Crop]
         PIM --> BackboneInput
     end
     
-    subgraph Stage 4: SOTA Feature Extraction Options
+    subgraph Stage4 ["Stage 4: SOTA Feature Extraction Options"]
         BackboneInput --> Choice{Backbone Selection}
         Choice -- CNN Baseline --> IResNet[IResNet-100 Backbone]
         Choice -- Transformer SOTA --> ViT[FaceVisionTransformer ViT-Face]
@@ -482,7 +482,7 @@ flowchart TD
         ViT --> Embed
     end
     
-    subgraph Stage 5: DDRC Open-Set Dictionary Classification
+    subgraph Stage5 ["Stage 5: DDRC Open-Set Dictionary Classification"]
         Embed --> LISTA[LISTA Unrolled Sparse Solver]
         LISTA --> ResidualCalc[Compute Class Residuals r_k and Noise e]
         ResidualCalc --> Gate{Residual <= tau AND Margin >= delta?}

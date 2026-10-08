@@ -52,20 +52,20 @@ flowchart TD
     RawImg[Input Wild Image] --> Stage1[Stage 1: FasterRCNNFaceDetector Base Pretrained Model]
     Stage1 --> BBoxes[High-Precision Bounding Boxes & Facial Landmarks]
     
-    subgraph Stage 2: Preprocessing, Attribute & Occlusion Parsing
+    subgraph Stage2 ["Stage 2: Preprocessing, Attribute and Occlusion Parsing"]
         BBoxes --> Crop[Face Region Crops 112x112]
         Crop --> ANet[ANet Attribute & Spatial Mask Parser]
         ANet --> SpatialMask[7x7 Spatial Occlusion Map M_spatial]
         ANet --> OccCheck{Major Occlusion or Yaw > 20°?}
     end
     
-    subgraph Stage 3: Generative Pose & Quality Transformation
+    subgraph Stage3 ["Stage 3: Generative Pose and Quality Transformation"]
         OccCheck -- Yes --> PIM[PIM Frontalizer & D2SC-GAN Super-Res]
         OccCheck -- No --> BackboneInput[Aligned Unoccluded Crop]
         PIM --> BackboneInput
     end
     
-    subgraph Stage 4: SOTA Feature Extraction Options
+    subgraph Stage4 ["Stage 4: SOTA Feature Extraction Options"]
         BackboneInput --> Choice{Backbone Selection}
         Choice -- CNN Option --> IResNet[IResNet-100 Backbone]
         Choice -- Transformer Option --> ViT[FaceVisionTransformer ViT-Face]
@@ -73,13 +73,13 @@ flowchart TD
         ViT --> Embed
     end
 
-    subgraph Training Loss & Negative Contrast
+    subgraph Training ["Training Loss and Negative Contrast"]
         Embed --> Curricular[CurricularFace Adaptive Margin Loss]
         Embed --> BroadQueue[BroadFace Memory Queue: N_q = 32,768]
         BroadQueue --> Curricular
     end
 
-    subgraph Stage 5: Open-Set Dictionary Classification & Unknown Gate
+    subgraph Stage5 ["Stage 5: Open-Set Dictionary Classification and Unknown Gate"]
         Embed --> LISTA[LISTA 5-Layer Unrolled Sparse Solver]
         LISTA --> ErrorIsol[Isolate Occlusion Error Vector e]
         ErrorIsol --> ResidualCalc[Compute Class Residuals r_k and Noise e]
