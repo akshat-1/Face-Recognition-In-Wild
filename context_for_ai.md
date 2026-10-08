@@ -29,6 +29,7 @@
 ├── models/
 │   ├── backbone.py               # Official SOTA IResNet-100 & FaceVisionTransformer (ViT-Face / TransFace)
 │   ├── detector.py               # FasterRCNNFaceDetector (ResNet-50 FPN base) & SOTAFaceDetector (MTCNN + YuNet)
+│   ├── sam_segmentor.py          # SAM (Segment Anything Model) Face Segmentor & Foreground Mask Predictor
 │   ├── anet_attribute.py         # ANet 40-attribute parser & 7x7 spatial occlusion attention map
 │   ├── pim_frontalizer.py        # PIM-GAN Pose Frontalizer & D2SC-GAN Super-Resolution
 │   ├── ddrc_solver.py            # Vectorized LISTA unrolled sparse solver & DDRC Open-Set Classifier

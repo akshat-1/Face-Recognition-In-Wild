@@ -9,16 +9,18 @@ from models.anet_attribute import ANetAttributeParser
 from models.pim_frontalizer import PIMFrontalizationGAN
 from models.backbone import ResNet100Backbone
 from models.ddrc_solver import DDRCClassifier
+from models.sam_segmentor import SAMFaceSegmentor
 
 class OccuPoseBroadDictPipeline(nn.Module):
     """
     OccuPose-BroadDictNet End-to-End Face Recognition & Detection Pipeline for Wild Imagery.
-    Unifies Detector, Attribute Parser, Pose Frontalizer, Feature Backbone, and DDRC Open-Set Classifier.
+    Unifies Base Detector, SAM Segmentor, ANet Attribute Parser, Pose Frontalizer, Feature Backbone, and DDRC Sparse Classifier.
     """
     def __init__(self, num_enrolled_classes: int = 100, feature_dim: int = 512):
         super(OccuPoseBroadDictPipeline, self).__init__()
         
         self.detector = WildFaceDetector()
+        self.sam_segmentor = SAMFaceSegmentor()
         self.attribute_parser = ANetAttributeParser()
         self.frontalizer = PIMFrontalizationGAN()
         self.backbone = ResNet100Backbone(embedding_dim=feature_dim)
@@ -155,26 +157,31 @@ class OccuPoseBroadDictPipeline(nn.Module):
                 crop_patch = img_tensor[:, :, y1:y2, x1:x2]
                 resized_crop = F.interpolate(crop_patch, size=(112, 112), mode='bilinear', align_corners=False)
                 
-                # Step 2: Semantic attribute & occlusion parsing via ANet Dual-Path
+                # Step 2: Semantic attribute & occlusion parsing via ANet Dual-Path & SAM Segmentor
                 lm_crop = landmarks[i] if landmarks.size(0) > i else None
                 attr_logits, occ_mask, is_occluded = self.attribute_parser(resized_crop, lm_crop)
+                mask_sam = self.sam_segmentor(resized_crop) # SAM foreground face mask (1, 1, 112, 112)
+                
+                # Apply SAM foreground segmentation and ANet spatial mask weighting
+                segmented_crop = resized_crop * mask_sam
                 
                 # Step 3: Pose estimation heuristic & PIM Frontalization
-                # Heuristic pose yaw estimation from horizontal crop ratio imbalance
                 crop_aspect_ratio = (x2 - x1) / float(y2 - y1 + 1e-5)
                 estimated_yaw = (crop_aspect_ratio - 1.0) * 45.0
                 
                 # Apply PIM frontalization if yaw is high or major occlusion is detected
                 if abs(estimated_yaw) > 20.0 or is_occluded.item():
-                    processed_crop = self.frontalizer(resized_crop, yaw_angle=estimated_yaw)
+                    processed_crop = self.frontalizer(segmented_crop, yaw_angle=estimated_yaw)
                 else:
-                    processed_crop = resized_crop
+                    processed_crop = segmented_crop
                     
                 # Step 4: Extract 512-d L2-normalized feature embedding
                 embedding = self.backbone(processed_crop) # (1, 512)
                 
-                # Step 5: DDRC Sparse Dictionary classification & open-set unknown check
-                preds, confs, residuals = self.ddrc_classifier(embedding)
+                # Step 5: DDRC Sparse Dictionary classification with Adaptive Residual Threshold
+                occ_severity = 1.0 - torch.mean(occ_mask).item()
+                tau_adaptive = min(0.75, 0.55 + 0.15 * occ_severity) # Adaptive threshold for masked faces
+                preds, confs, residuals = self.ddrc_classifier(embedding, residual_threshold=tau_adaptive)
                 identity_label = preds[0]
                 raw_ddrc_conf = confs[0].item()
                 det_conf = det_scores[i].item()
