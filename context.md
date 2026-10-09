@@ -275,6 +275,8 @@ graph LR
 | **DDRC** | Sparse error term $e$ isolates occlusions; residual checks detect unknown identity | Optimization loop (ISTA/ADMM) adds inference latency | Closed-set identity classification & robust 'unknown' flag gate |
 | **PIM / D2SC-GAN** | Synthesizes canonical frontal view; removes severe pose distortion | Generative artifacts if pose/resolution is extremely degraded | Frontalization & super-resolution pre-processing module for crop patches |
 | **ViT-Face / TransFace** | Global self-attention ($Q K^T / \sqrt{d_k}$) dynamically routes features around occlusions | Requires higher VRAM/compute than lightweight CNNs | High-capacity alternative backbone option (`vit_face_base` / `vit_face_large`) in `models/backbone.py` |
+| **SAM Segmentor** | Pixel-level facial foreground mask $M_{\text{SAM}}$ isolates face geometry from crowd clutter | ViT patch stem adds minor compute overhead | Preprocessing mask filter (`crop * M_SAM`) in `models/sam_segmentor.py` |
+| **Wing Loss** | Amplifies gradients for small landmark localization errors ($|x| < w$) | Requires smooth continuous bounds near threshold | Non-linear 5-point facial landmark alignment loss in `losses/wing_loss.py` |
 
 ---
 
@@ -523,31 +525,38 @@ flowchart TD
 
 ---
 
-### 9.3 Multi-Layered Occlusion Tackling Strategy
+### 9.3 Multi-Layered Occlusion & Clutter Mitigation Strategy
 
-Occlusion in real-world face recognition is tackled through a **4-Layered Multi-Stage Strategy**:
+Occlusion and background clutter in real-world face recognition are tackled through a **5-Layered Multi-Stage Strategy**:
 
 ```
 +-------------------------------------------------------------------+
-| LAYER 1: Soft-NMS Crowd Detection (Preserves Overlapping BBoxes) |
+| LAYER 1: Pretrained Faster-RCNN + Multi-Scale TTA + Soft-NMS     |
+| (Preserves Overlapping BBoxes & Tiny Faces < 16 px)               |
 +-------------------------------------------------------------------+
                                   │
                                   ▼
 +-------------------------------------------------------------------+
-| LAYER 2: ANet Spatial Attention Masking M_spatial                 |
-| (Identifies & Suppresses Corrupted Pixel Zones)                  |
+| LAYER 2: SAM Foreground Masking M_SAM & ANet Spatial Masking      |
+| (Isolates Face Geometry & Suppresses Corrupted Pixel Zones)       |
 +-------------------------------------------------------------------+
                                   │
                                   ▼
 +-------------------------------------------------------------------+
-| LAYER 3: CurricularFace Adaptive Loss                             |
-| (Suppresses Occluded Noise Early; Enforces Tight Margins Late)    |
+| LAYER 3: CurricularFace Adaptive Loss & BroadFace Queue            |
+| (Suppresses Occluded Noise Early; Enforces Global Negative Margin)|
 +-------------------------------------------------------------------+
                                   │
                                   ▼
 +-------------------------------------------------------------------+
-| LAYER 4: DDRC Explicit Sparse Error Vector Isolation (f = Dx + e) |
-| (Absorbs Occlusion Corruptions in e; Reconstructs Clean f via D)  |
+| LAYER 4: Wing Loss 5-Point Landmark Alignment Regularization      |
+| (Sub-Pixel Non-Linear Landmark Alignment for Tilted Faces)        |
++-------------------------------------------------------------------+
+                                  │
+                                  ▼
++-------------------------------------------------------------------+
+| LAYER 5: DDRC Sparse Error Isolation (f = Dx + e) & Adaptive Gate |
+| (Absorbs Mask/Sunglass Corruptions in e; Dynamic tau_adaptive Gate)|
 +-------------------------------------------------------------------+
 ```
 
@@ -591,6 +600,8 @@ Where:
 
 | Module / Component | Primary Paper Reference & Authors | Official / Reference Repository | Design Rationale & Technical Justification |
 | :--- | :--- | :--- | :--- |
+| **SAM Segmentor** (`models/sam_segmentor.py`) | Kirillov et al. *"Segment Anything"*, ICCV 2023 | [`facebookresearch/segment-anything`](https://github.com/facebookresearch/segment-anything) | Implements 100% faithful Meta AI SAM architecture (ViT patch stem, random Gaussian PE matrix, 2-Way Transformer Decoder, dynamic hypernetworks MLPs). Predicts $M_{\text{SAM}} \in [0, 1]^{112 \times 112}$ face foreground mask. |
+| **Wing Loss** (`losses/wing_loss.py`) | Feng et al. *"Wing Loss for Deep Face Alignment"*, CVPR 2018 | [`FengZhenhua/Wing-Loss`](https://github.com/FengZhenhua/Wing-Loss) | Logarithmic loss function ($\text{Wing}(\Delta x) = w \ln(1 + |\Delta x|/\epsilon)$) amplifying gradients for small landmark localization errors, achieving sub-pixel precision for 5-point landmark alignment. |
 | **IResNet-100 Backbone** (`models/backbone.py`) | Deng et al. *"ArcFace: Additive Angular Margin Loss for Deep Face Recognition"*, CVPR 2019 | [`deepinsight/insightface`](https://github.com/deepinsight/insightface) | Replaced custom/basic ResNet with the **exact standard official IResNet-100** architecture (`IBasicBlock` layout `[3, 13, 30, 3]`). Avoids non-standard simplifications and ensures 100% weight compatibility with pretrained InsightFace backbones. |
 | **FaceVisionTransformer (ViT-Face)** (`models/backbone.py`) | Dosovitskiy et al. (ICLR 2021), Dan et al. *"TransFace"*, ICCV 2023 & Zhong et al. *"FaceViT"*, IEEE T-PAMI 2022 | [`google-research/vision_transformer`](https://github.com/google-research/vision_transformer) & [`Dan-T/TransFace`](https://github.com/Dan-T/TransFace) | Integrated SOTA Vision Transformer (`vit_face_base` & `vit_face_large`) as a high-capacity alternative to CNNs. Multi-Head Self-Attention ($\text{Softmax}(QK^T / \sqrt{d_k})V$) dynamically routes features away from occluded patch tokens (masks, sunglasses) to unoccluded facial tokens across all 196 image patches simultaneously. |
 | **CurricularFace Loss** (`losses/curricular_loss.py`) | Huang et al. *"CurricularFace: Adaptive Curriculum Learning Loss for Deep Face Recognition"*, CVPR 2020 | [`HuangYG123/CurricularFace`](https://github.com/HuangYG123/CurricularFace) | Standard margin losses (ArcFace/CosFace) diverge when trained on noisy/occluded wild faces. CurricularFace uses an EMA-tracked parameter $t$ to suppress occluded hard samples early and amplify them late. Added `dist.all_reduce` for DDP multi-GPU scaling. |
