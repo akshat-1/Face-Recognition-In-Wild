@@ -16,6 +16,7 @@ from dataset import WildFaceDataset, UnlabeledFaceDataset, CelebAAttributeDatase
 from losses.broadface_queue import BroadFaceCurricularLoss
 from losses.wing_loss import WingLoss
 from models.backbone import ResNet100Backbone, vit_face_base
+from models.detector import FasterRCNNFaceDetector
 from models.anet_attribute import ANetAttributeParser
 from models.sam_segmentor import SAMFaceSegmentor
 from models.gcn_cluster import GCNLinkPredictor
@@ -77,6 +78,8 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
         print(f"Labeled training dataset initialized: {len(train_dataset)} samples across {num_classes} identities.")
     
     backbone = get_backbone(cfg).to(device)
+    detector = FasterRCNNFaceDetector(weights_dir=cfg.train.checkpoint_dir).to(device)
+    detector.eval()
     sam_segmentor = SAMFaceSegmentor().to(device)
     sam_segmentor.eval()
     
