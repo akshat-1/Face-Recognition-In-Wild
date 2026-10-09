@@ -122,7 +122,7 @@ class BroadFaceCurricularLoss(nn.Module):
             cos_theta
         )
         
-        output_logits = torch.where(one_hot.bool(), target_margin, modulated_negatives)
+        output_logits = torch.where(one_hot.bool(), target_margin, modulated_negatives).float()
         output_logits = output_logits * self.scale_factor
         
         return F.cross_entropy(output_logits, y)

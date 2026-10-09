@@ -88,8 +88,8 @@ class CurricularFaceLoss(nn.Module):
             cos_theta
         )
         
-        # Combine target positive logits and modulated negative logits
-        output_logits = torch.where(one_hot.bool(), target_margin, modulated_negatives)
+        # Combine target positive logits and modulated negative logits in FP32 precision for AMP stability
+        output_logits = torch.where(one_hot.bool(), target_margin, modulated_negatives).float()
         output_logits = output_logits * self.s
         
         loss = F.cross_entropy(output_logits, labels)

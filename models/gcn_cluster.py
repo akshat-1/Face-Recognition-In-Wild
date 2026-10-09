@@ -49,8 +49,7 @@ class GCNLinkPredictor(nn.Module):
             nn.Linear(256, 128),
             nn.BatchNorm1d(128),
             nn.ReLU(inplace=True),
-            nn.Linear(128, 1),
-            nn.Sigmoid()
+            nn.Linear(128, 1)
         )
 
     def build_knn_adjacency(self, embeddings: torch.Tensor) -> torch.Tensor:
@@ -111,7 +110,8 @@ class GCNLinkPredictor(nn.Module):
         prod = h_i * h_j
         
         pairs = torch.cat([h_i, h_j, diff, prod], dim=-1).reshape(B * B, -1) # (B*B, 4*hidden_dim)
-        edge_probs = self.edge_mlp(pairs).reshape(B, B)
+        edge_logits = self.edge_mlp(pairs).reshape(B, B)
+        edge_probs = torch.sigmoid(edge_logits)
 
         if labels is not None:
             # Build target adjacency matrix Y_ij = 1 if label_i == label_j else 0
@@ -119,8 +119,8 @@ class GCNLinkPredictor(nn.Module):
             labels_j = labels.unsqueeze(0).repeat(B, 1)
             target_edges = (labels_i == labels_j).float()
             
-            # Binary Cross Entropy Loss over predicted edge probabilities
-            loss = F.binary_cross_entropy(edge_probs, target_edges)
+            # Binary Cross Entropy with Logits for 100% PyTorch AMP Autocast safety and numerical stability
+            loss = F.binary_cross_entropy_with_logits(edge_logits.float(), target_edges.float())
             return loss, edge_probs
             
         return edge_probs

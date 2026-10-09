@@ -439,7 +439,7 @@ class Phase2UnifiedAttributeDataset(data.Dataset):
                             break
                     if found_path:
                         self.samples.append((found_path, attrs))
-                    else:
+                    elif self.root_dir and os.path.exists(os.path.join(self.root_dir, img_name)):
                         self.samples.append((os.path.join(self.root_dir, img_name), attrs))
         
         # 2. Index all wild datasets (unlabeled, name_label, bb_label)

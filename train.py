@@ -5,8 +5,14 @@ warnings.filterwarnings("ignore")
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 import torch.optim as optim
 import torch.distributed as dist
+import torch.multiprocessing as mp
+try:
+    mp.set_sharing_strategy('file_system')
+except Exception:
+    pass
 from torch.utils.data import DataLoader
 from torch.utils.data.distributed import DistributedSampler
 from torch.amp import autocast, GradScaler
@@ -270,7 +276,7 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
         
     criterion_bce = nn.BCEWithLogitsLoss()
     criterion_mask = nn.BCELoss()
-    criterion_wing = WingLoss(w=10.0, epsilon=2.0).to(device)
+    criterion_wing = WingLoss(omega=10.0, epsilon=2.0).to(device)
     optimizer = optim.Adam(list(anet.parameters()) + list(sam_segmentor.parameters()), lr=1e-3, weight_decay=1e-4)
     
     phase2_epochs = min(cfg.train.epochs, 30)
@@ -302,7 +308,8 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
                 
             # BCELoss & WingLoss evaluated in float32 for numerical stability
             loss_mask = criterion_mask(occ_mask.float(), gt_masks.float())
-            loss_sam = criterion_mask(sam_mask.float(), gt_masks.float())
+            gt_masks_full = F.interpolate(gt_masks.float(), size=images.shape[2:], mode='nearest')
+            loss_sam = criterion_mask(sam_mask.float(), gt_masks_full)
             loss_wing = criterion_wing(occ_mask.float(), gt_masks.float())
             
             # Multi-Task Joint Loss: Attributes (BCE) + Spatial Mask (BCE) + SAM Mask (BCE) + Landmark Alignment (WingLoss)
