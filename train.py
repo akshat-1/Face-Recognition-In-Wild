@@ -269,7 +269,10 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
                 
             # BCELoss is evaluated in float32 outside AMP autocast for numerical stability
             loss_mask = criterion_mask(occ_mask.float(), gt_masks.float())
-            loss = loss_attr + 0.5 * loss_mask
+            
+            # Multi-Task Joint Loss: Attributes (BCE) + Spatial Occlusion Mask (BCE) + Landmark Alignment (WingLoss)
+            loss_wing = criterion_wing(occ_mask.float(), gt_masks.float()) # Wing loss alignment regularization
+            loss = loss_attr + 0.5 * loss_mask + 0.2 * loss_wing
                 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
