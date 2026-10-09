@@ -4,14 +4,15 @@ import math
 import time
 import torch
 import numpy as np
-import torchvision.models.detection as detection
 from PIL import Image, ImageDraw
+
+from models.detector import LNetAnchorFaceLocalizer
 
 VALID_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
 
-def generate_predictions_grid(output_dir: str, grid_filename: str = "all_predictions_grid.jpg", thumb_size=(320, 320)):
+def generate_predictions_grid(output_dir: str, grid_filename: str = "raw_predictions_grid.jpg", thumb_size=(320, 320)):
     """
-    Creates a composite grid figure of all raw pretrained Faster-RCNN outputs.
+    Creates a composite grid figure of all raw model outputs.
     """
     pred_files = []
     if os.path.exists(output_dir):
@@ -41,7 +42,7 @@ def generate_predictions_grid(output_dir: str, grid_filename: str = "all_predict
     
     # Top banner title
     draw.rectangle([0, 0, grid_w, banner_h], fill=(40, 30, 70))
-    title_text = f"Raw Pretrained Faster-RCNN (ResNet-50 FPN) Bounding Box Grid ({num_images} Scenes)"
+    title_text = f"Raw Codebase Localizer Model (LNetAnchorFaceLocalizer) Grid ({num_images} Scenes)"
     draw.text((padding + 10, 22), title_text, fill=(255, 255, 255))
     
     for idx, img_path in enumerate(pred_files):
@@ -72,17 +73,17 @@ def generate_predictions_grid(output_dir: str, grid_filename: str = "all_predict
     print(f"✓ Saved composite grid figure to: {grid_path}")
     return grid_path
 
-def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results/raw_pretrained"):
+def run_raw_detector_inference(target_path: str, output_dir: str = "./results/raw_pretrained"):
     """
-    Runs inference using ONLY the raw pretrained Faster-RCNN (ResNet-50 FPN COCO) model.
+    Runs inference using ONLY the raw native localizer model (LNetAnchorFaceLocalizer) built inside our codebase.
     """
     print(f"========================================================================")
-    print(f"--- Raw Pretrained Faster-RCNN (ResNet-50 FPN) Inference ---")
+    print(f"--- Native Raw Architecture Model (LNetAnchorFaceLocalizer) Inference ---")
     print(f"Target Path: {target_path} | Output Directory: {output_dir}")
     print(f"========================================================================\n")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = detection.fasterrcnn_resnet50_fpn(weights=detection.FasterRCNN_ResNet50_FPN_Weights.DEFAULT).to(device)
+    model = LNetAnchorFaceLocalizer().to(device)
     model.eval()
     
     os.makedirs(output_dir, exist_ok=True)
@@ -96,7 +97,6 @@ def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results
                 if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                     image_files.append(os.path.join(root, f))
                 
-    csv_path = os.path.join(output_dir, "test_predictions_summary.csv")
     summary_records = []
     start_time = time.time()
     
@@ -108,32 +108,19 @@ def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results
             pil_img = Image.open(img_path).convert('RGB')
             orig_w, orig_h = pil_img.size
             
-            # Normalize to [0, 1] tensor for torchvision Faster-RCNN
+            # Normalize to [-1, 1] tensor for LNet localizer
             np_img = np.array(pil_img).transpose(2, 0, 1)
-            img_tensor = torch.tensor(np_img).float() / 255.0
+            img_tensor = (torch.tensor(np_img).unsqueeze(0).float() / 127.5) - 1.0
             img_tensor = img_tensor.to(device)
         except Exception as e:
             print(f"❌ Error reading image {fname}: {e}")
             continue
             
         with torch.no_grad():
-            preds = model([img_tensor])[0]
-            boxes = preds['boxes']
-            scores = preds['scores']
-            labels = preds['labels']
+            boxes, scores, landmarks = model(img_tensor, score_threshold=0.3)
             
-            # Filter person / bounding box proposals (label == 1, score >= 0.3)
-            mask = (labels == 1) & (scores >= 0.3)
-            p_boxes = boxes[mask]
-            p_scores = scores[mask]
-            
-            # Fallback to top-scoring box if score < 0.3
-            if p_boxes.size(0) == 0 and boxes.size(0) > 0:
-                p_boxes = boxes[:1]
-                p_scores = scores[:1]
-                
         draw = ImageDraw.Draw(pil_img)
-        num_boxes = p_boxes.size(0)
+        num_boxes = boxes.size(0)
         
         if num_boxes == 0:
             print(f"   ↳ No bounding box detected.")
@@ -141,13 +128,13 @@ def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results
                 'image_filename': fname,
                 'num_boxes_detected': 0,
                 'box_id': 0,
-                'faster_rcnn_score': '0.00%',
+                'detector_score': '0.00%',
                 'box_coords': '[]'
             })
         else:
             for b_idx in range(num_boxes):
-                box = p_boxes[b_idx].cpu().numpy().astype(int)
-                score = float(p_scores[b_idx].item())
+                box = boxes[b_idx].cpu().numpy().astype(int)
+                score = float(scores[b_idx].item())
                 
                 x1, y1, x2, y2 = max(0, box[0]), max(0, box[1]), min(orig_w, box[2]), min(orig_h, box[3])
                 
@@ -157,16 +144,16 @@ def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results
                     'image_filename': fname,
                     'num_boxes_detected': num_boxes,
                     'box_id': b_idx + 1,
-                    'faster_rcnn_score': f"{score:.2%}",
+                    'detector_score': f"{score:.2%}",
                     'box_coords': str([x1, y1, x2, y2])
                 })
                 
-                # Draw raw Faster-RCNN bounding box in Magenta
+                # Draw raw model bounding box in Magenta
                 box_color = (255, 0, 128)
                 draw.rectangle([x1, y1, x2, y2], outline=box_color, width=max(3, int(orig_w / 120)))
                 
                 # Label tag
-                label_text = f"Raw Faster-RCNN | {score:.0%}"
+                label_text = f"Raw LNet | {score:.0%}"
                 text_height = max(18, int(orig_h / 25))
                 font_box_y1 = max(0, y1 - text_height)
                 draw.rectangle([x1, font_box_y1, x1 + len(label_text) * 8, max(0, y1)], fill=box_color)
@@ -184,7 +171,7 @@ def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results
         
     # Save CSV Summary
     csv_path = os.path.join(output_dir, "raw_test_predictions_summary.csv")
-    fieldnames = ['image_filename', 'num_boxes_detected', 'box_id', 'faster_rcnn_score', 'box_coords']
+    fieldnames = ['image_filename', 'num_boxes_detected', 'box_id', 'detector_score', 'box_coords']
     with open(csv_path, 'w', newline='', encoding='utf-8') as f:
         writer = csv.DictWriter(f, fieldnames=fieldnames)
         writer.writeheader()
@@ -194,7 +181,7 @@ def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results
     
     elapsed = time.time() - start_time
     print(f"\n========================================================================")
-    print(f"✓ Completed raw Faster-RCNN inference in {elapsed:.2f}s ({elapsed/max(1, len(image_files)):.2f}s/img)")
+    print(f"✓ Completed raw LNet localizer inference in {elapsed:.2f}s ({elapsed/max(1, len(image_files)):.2f}s/img)")
     if len(image_files) == 1:
         print(f"✓ Output annotated image saved to  : {save_path}")
     else:
@@ -206,14 +193,14 @@ def run_raw_faster_rcnn_inference(target_path: str, output_dir: str = "./results
 
 def main():
     import argparse
-    parser = argparse.ArgumentParser(description="Raw Pretrained Faster-RCNN Base Detector Inference")
+    parser = argparse.ArgumentParser(description="Native Raw Architecture Model (LNetAnchorFaceLocalizer) Inference")
     parser.add_argument("--image_path", type=str, default="", help="Path to single image file")
     parser.add_argument("--image_dir", type=str, default="", help="Path to directory containing images")
     parser.add_argument("--output_dir", type=str, default="./results/raw_pretrained", help="Output directory")
     args = parser.parse_args()
     
     target_path = args.image_path if args.image_path else (args.image_dir if args.image_dir else "./Test_dataser")
-    run_raw_faster_rcnn_inference(target_path=target_path, output_dir=args.output_dir)
+    run_raw_detector_inference(target_path=target_path, output_dir=args.output_dir)
 
 if __name__ == "__main__":
     main()
