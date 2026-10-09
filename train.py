@@ -17,6 +17,7 @@ from losses.broadface_queue import BroadFaceCurricularLoss
 from losses.wing_loss import WingLoss
 from models.backbone import ResNet100Backbone, vit_face_base
 from models.anet_attribute import ANetAttributeParser
+from models.sam_segmentor import SAMFaceSegmentor
 from models.gcn_cluster import GCNLinkPredictor
 
 def get_backbone(cfg: SystemConfig):
@@ -76,6 +77,8 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
         print(f"Labeled training dataset initialized: {len(train_dataset)} samples across {num_classes} identities.")
     
     backbone = get_backbone(cfg).to(device)
+    sam_segmentor = SAMFaceSegmentor().to(device)
+    sam_segmentor.eval()
     
     broadface_loss_fn = BroadFaceCurricularLoss(
         in_features=cfg.model.embedding_dim,
@@ -161,7 +164,10 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
             
             optimizer.zero_grad()
             with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
-                embeddings = backbone(images)
+                with torch.no_grad():
+                    mask_sam = sam_segmentor(images)
+                segmented_images = images * mask_sam
+                embeddings = backbone(segmented_images)
                 loss = broadface_loss_fn(embeddings, labels)
                 
             scaler.scale(loss).backward()
@@ -221,6 +227,7 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
         print(f"Phase 2 Unified Attribute Dataset initialized: {len(celeba_dataset)} images across all datasets.")
     
     anet = ANetAttributeParser(num_attributes=40).to(device)
+    sam_segmentor = SAMFaceSegmentor().to(device)
     
     # Check if completed Phase 2 pretrained checkpoint exists (skip only if not force_retrain)
     phase2_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase2_anet_attributes.pt")
@@ -246,7 +253,7 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
     criterion_bce = nn.BCEWithLogitsLoss()
     criterion_mask = nn.BCELoss()
     criterion_wing = WingLoss(w=10.0, epsilon=2.0).to(device)
-    optimizer = optim.Adam(anet.parameters(), lr=1e-3, weight_decay=1e-4)
+    optimizer = optim.Adam(list(anet.parameters()) + list(sam_segmentor.parameters()), lr=1e-3, weight_decay=1e-4)
     
     phase2_epochs = min(cfg.train.epochs, 30)
     scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=phase2_epochs, eta_min=1e-5)
@@ -265,14 +272,16 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
             optimizer.zero_grad()
             with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
                 attr_logits, occ_mask, _ = anet(images)
+                sam_mask = sam_segmentor(images)
                 loss_attr = criterion_bce(attr_logits, attr_targets)
                 
-            # BCELoss is evaluated in float32 outside AMP autocast for numerical stability
+            # BCELoss & WingLoss evaluated in float32 for numerical stability
             loss_mask = criterion_mask(occ_mask.float(), gt_masks.float())
+            loss_sam = criterion_mask(sam_mask.float(), gt_masks.float())
+            loss_wing = criterion_wing(occ_mask.float(), gt_masks.float())
             
-            # Multi-Task Joint Loss: Attributes (BCE) + Spatial Occlusion Mask (BCE) + Landmark Alignment (WingLoss)
-            loss_wing = criterion_wing(occ_mask.float(), gt_masks.float()) # Wing loss alignment regularization
-            loss = loss_attr + 0.5 * loss_mask + 0.2 * loss_wing
+            # Multi-Task Joint Loss: Attributes (BCE) + Spatial Mask (BCE) + SAM Mask (BCE) + Landmark Alignment (WingLoss)
+            loss = loss_attr + 0.5 * loss_mask + 0.3 * loss_sam + 0.2 * loss_wing
                 
             scaler.scale(loss).backward()
             scaler.step(optimizer)
