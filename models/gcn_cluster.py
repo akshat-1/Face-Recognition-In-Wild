@@ -81,6 +81,50 @@ class GCNLinkPredictor(nn.Module):
         norm_adj = torch.matmul(torch.matmul(deg_mat, adj), deg_mat)
         return norm_adj
 
+    def forward(self, embeddings: torch.Tensor, labels: torch.Tensor = None):
+        """
+        Forward pass for GCN link prediction training.
+        Args:
+            embeddings: (B, feature_dim) normalized node feature embeddings
+            labels: optional (B,) identity ground-truth class labels to build target edge matrix Y_ij
+        Returns:
+            loss: scalar BCE loss if labels provided, else None
+            edge_probs: (B, B) predicted pairwise connection probabilities
+        """
+        B = embeddings.size(0)
+        if B <= 1:
+            edge_probs = torch.ones((B, B), device=embeddings.device)
+            return (torch.tensor(0.0, device=embeddings.device), edge_probs) if labels is not None else edge_probs
+
+        adj = self.build_knn_adjacency(embeddings)
+        
+        # 3-Stage GCN with Residual Connection
+        h1 = self.gcn1(embeddings, adj)
+        h2 = self.gcn2(h1, adj)
+        h3 = self.gcn3(h2, adj) + h1 # Residual skip connection
+        
+        # 4-Way Edge Feature Interaction: [h_i, h_j, |h_i - h_j|, h_i * h_j]
+        h_i = h3.unsqueeze(1).repeat(1, B, 1) # (B, B, hidden_dim)
+        h_j = h3.unsqueeze(0).repeat(B, 1, 1) # (B, B, hidden_dim)
+        
+        diff = torch.abs(h_i - h_j)
+        prod = h_i * h_j
+        
+        pairs = torch.cat([h_i, h_j, diff, prod], dim=-1).reshape(B * B, -1) # (B*B, 4*hidden_dim)
+        edge_probs = self.edge_mlp(pairs).reshape(B, B)
+
+        if labels is not None:
+            # Build target adjacency matrix Y_ij = 1 if label_i == label_j else 0
+            labels_i = labels.unsqueeze(1).repeat(1, B)
+            labels_j = labels.unsqueeze(0).repeat(B, 1)
+            target_edges = (labels_i == labels_j).float()
+            
+            # Binary Cross Entropy Loss over predicted edge probabilities
+            loss = F.binary_cross_entropy(edge_probs, target_edges)
+            return loss, edge_probs
+            
+        return edge_probs
+
     def generate_pseudo_labels(self, embeddings: torch.Tensor, confidence_threshold: float = 0.75, start_class_idx: int = 1000):
         """
         Clusters unlabeled face embeddings using GCN edge predictions and returns pseudo-labels.

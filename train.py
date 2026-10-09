@@ -337,6 +337,10 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
     """
     Phase 3 Training: Semi-Supervised Unlabeled Face Clustering via GCN Sub-Graph Link Prediction.
     Tackles unannotated wild face datasets (FMD, COVID faces, web crawls).
+    
+    1. Trains GCNLinkPredictor on sub-graph pairwise link probabilities using backpropagation (BCE loss).
+    2. Runs BFS connected-component clustering to pseudo-label unlabeled wild face embeddings.
+    3. Performs closed-loop joint semi-supervised fine-tuning of the backbone on pseudo-labeled + labeled data streams.
     """
     if rank == 0:
         print(f"\n========================================================================")
@@ -344,43 +348,78 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
         print(f"========================================================================\n")
     
     unlabeled_dataset = UnlabeledFaceDataset(root_dir=cfg.dataset.unlabeled_data_dir, is_train=True)
+    labeled_dataset = WildFaceDataset(root_dir=cfg.dataset.train_data_dir, is_train=True)
+    
     if is_ddp:
-        sampler = DistributedSampler(unlabeled_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=cfg.train.batch_size, sampler=sampler, num_workers=cfg.dataset.num_workers)
+        sampler_unlabeled = DistributedSampler(unlabeled_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+        unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=cfg.train.batch_size, sampler=sampler_unlabeled, num_workers=cfg.dataset.num_workers)
+        sampler_labeled = DistributedSampler(labeled_dataset, num_replicas=world_size, rank=rank, shuffle=True)
+        labeled_loader = DataLoader(labeled_dataset, batch_size=cfg.train.batch_size, sampler=sampler_labeled, num_workers=cfg.dataset.num_workers)
     else:
-        sampler = None
+        sampler_unlabeled, sampler_labeled = None, None
         unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.dataset.num_workers)
+        labeled_loader = DataLoader(labeled_dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.dataset.num_workers)
     
     gcn_predictor = GCNLinkPredictor(feature_dim=cfg.model.embedding_dim, hidden_dim=256, k_neighbors=5).to(device)
     if is_ddp and device.type == 'cuda':
         gcn_predictor = nn.parallel.DistributedDataParallel(gcn_predictor, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
         
-    optimizer_gcn = optim.Adam(gcn_predictor.parameters(), lr=1e-3)
+    optimizer_gcn = optim.Adam(gcn_predictor.parameters(), lr=1e-3, weight_decay=1e-4)
+    scaler = GradScaler('cuda', enabled=cfg.model.fp16 and device.type == 'cuda')
     
     if rank == 0:
-        print(f"Unlabeled wild face dataset loaded: {len(unlabeled_dataset)} images.")
+        print(f"Phase 3 Dataset Streams initialized: {len(labeled_dataset)} labeled samples, {len(unlabeled_dataset)} unlabeled wild face images.")
     
     unwrapped_backbone = backbone.module if hasattr(backbone, 'module') else backbone
     unwrapped_backbone.eval()
     
-    phase3_epochs = min(cfg.train.epochs, 10)
-    for epoch in range(1, phase3_epochs + 1):
-        if sampler is not None:
-            sampler.set_epoch(epoch)
+    # -------------------------------------------------------------------------
+    # Stage 3.1: Supervised Training of GCN Link Predictor on Sub-Graph Edges
+    # -------------------------------------------------------------------------
+    if rank == 0:
+        print(f"\n[Phase 3.1] Training GCN Link Predictor backbone with pairwise edge BCE backpropagation...")
+        
+    gcn_epochs = min(cfg.train.epochs, 5)
+    gcn_predictor.train()
+    for epoch in range(1, gcn_epochs + 1):
+        if sampler_labeled is not None:
+            sampler_labeled.set_epoch(epoch)
+        running_gcn_loss = 0.0
+        for step, batch in enumerate(labeled_loader):
+            images, labels, _ = batch
+            images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
             
-        if hasattr(unlabeled_dataset, "rescan"):
-            unlabeled_dataset.rescan()
-            if is_ddp:
-                sampler = DistributedSampler(unlabeled_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-                unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=cfg.train.batch_size, sampler=sampler, num_workers=cfg.dataset.num_workers)
-            
-        total_clustered = 0
-        for images, labels, is_labeled in unlabeled_loader:
-            images = images.to(device)
             with torch.no_grad():
-                unlabeled_embeds = unwrapped_backbone(images)
+                embeds = unwrapped_backbone(images)
                 
-            unwrapped_gcn = gcn_predictor.module if hasattr(gcn_predictor, 'module') else gcn_predictor
+            optimizer_gcn.zero_grad()
+            with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
+                loss_gcn, edge_probs = gcn_predictor(embeds, labels)
+                
+            scaler.scale(loss_gcn).backward()
+            scaler.step(optimizer_gcn)
+            scaler.update()
+            running_gcn_loss += loss_gcn.item()
+            
+        if rank == 0:
+            print(f"GCN Link Predictor Epoch [{epoch}/{gcn_epochs}] - Loss: {running_gcn_loss / max(1, len(labeled_loader)):.4f}")
+
+    # -------------------------------------------------------------------------
+    # Stage 3.2: BFS Graph Clustering & Semi-Supervised Joint Fine-Tuning
+    # -------------------------------------------------------------------------
+    if rank == 0:
+        print(f"\n[Phase 3.2] Clustering Unlabeled Wild Faces & Performing Joint Semi-Supervised Fine-Tuning...")
+        
+    unwrapped_gcn = gcn_predictor.module if hasattr(gcn_predictor, 'module') else gcn_predictor
+    unwrapped_gcn.eval()
+    
+    total_clustered = 0
+    pseudo_labeled_samples = []
+    
+    with torch.no_grad():
+        for images, _, _ in unlabeled_loader:
+            images = images.to(device)
+            unlabeled_embeds = unwrapped_backbone(images)
             pseudo_labels, active_mask = unwrapped_gcn.generate_pseudo_labels(
                 unlabeled_embeds,
                 confidence_threshold=cfg.loss.pseudo_label_threshold,
@@ -388,14 +427,66 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
             )
             total_clustered += active_mask.sum().item()
             
+            # Collect high-confidence pseudo-labeled images for joint retraining
+            active_indices = torch.where(active_mask)[0]
+            for idx in active_indices:
+                pseudo_labeled_samples.append((images[idx], pseudo_labels[idx].item()))
+                
+    if rank == 0:
+        print(f"✓ GCN BFS Graph Clustering Complete: Generated {total_clustered} high-confidence pseudo-labeled faces across unlabeled streams.")
+
+    # Closed-Loop Joint Backbone Fine-Tuning on Pseudo-Labeled Samples
+    if len(pseudo_labeled_samples) > 0:
         if rank == 0:
-            print(f"GCN Semi-Supervised Epoch [{epoch}/{phase3_epochs}] - High-Confidence Pseudo-Labeled Faces: {total_clustered}/{len(unlabeled_dataset)}")
+            print(f"[Phase 3.3] Fine-tuning Backbone on Joint Labeled + {len(pseudo_labeled_samples)} Pseudo-Labeled Faces...")
         
+        max_pseudo_class = max(lbl for _, lbl in pseudo_labeled_samples)
+        total_classes = max(num_labeled_classes, max_pseudo_class + 1)
+        
+        joint_loss_fn = BroadFaceCurricularLoss(
+            in_features=cfg.model.embedding_dim,
+            num_classes=total_classes,
+            scale_factor=cfg.loss.scale,
+            margin=cfg.loss.margin,
+            alpha=cfg.loss.ema_alpha,
+            queue_size=cfg.loss.queue_size,
+            compensate=True
+        ).to(device)
+        
+        optimizer_joint = optim.SGD(
+            list(backbone.parameters()) + list(joint_loss_fn.parameters()),
+            lr=1e-3, momentum=cfg.train.momentum, weight_decay=cfg.train.weight_decay
+        )
+        
+        backbone.train()
+        joint_epochs = min(cfg.train.epochs, 3)
+        for j_epoch in range(1, joint_epochs + 1):
+            running_j_loss = 0.0
+            # Joint mini-batch training
+            for i in range(0, len(pseudo_labeled_samples), cfg.train.batch_size):
+                batch_tuples = pseudo_labeled_samples[i:i + cfg.train.batch_size]
+                j_imgs = torch.stack([t[0] for t in batch_tuples]).to(device)
+                j_lbls = torch.tensor([t[1] for t in batch_tuples], device=device, dtype=torch.long)
+                
+                optimizer_joint.zero_grad()
+                with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
+                    j_embeds = backbone(j_imgs)
+                    j_loss = joint_loss_fn(j_embeds, j_lbls)
+                    
+                scaler.scale(j_loss).backward()
+                scaler.step(optimizer_joint)
+                scaler.update()
+                running_j_loss += j_loss.item()
+                
+            if rank == 0:
+                print(f"Joint Retraining Epoch [{j_epoch}/{joint_epochs}] - BroadFace Curricular Loss: {running_j_loss / max(1, len(pseudo_labeled_samples) // cfg.train.batch_size):.4f}")
+
     if rank == 0:
         ckpt_path = os.path.join(cfg.train.checkpoint_dir, "phase3_semi_gcn_predictor.pt")
-        gcn_state = gcn_predictor.module.state_dict() if hasattr(gcn_predictor, 'module') else gcn_predictor.state_dict()
+        gcn_state = unwrapped_gcn.state_dict()
         torch.save({'gcn_predictor': gcn_state}, ckpt_path)
-        print(f"[Phase 3 Complete] GCN Link Predictor checkpoint saved to: {ckpt_path}")
+        print(f"\n[Phase 3 Complete] Saved trained GCN Link Predictor checkpoint to: {ckpt_path}")
+
 
 def main():
     parser = argparse.ArgumentParser(description="OccuPose-BroadDictNet Commercial SOTA Multi-Stage Training Pipeline")
