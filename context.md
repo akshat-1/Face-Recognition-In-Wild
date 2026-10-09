@@ -318,12 +318,14 @@ flowchart TD
         OccCheck -- No: Normal Pose & Unoccluded --> Align[Standard Affine Alignment]
         PIM --> Align
         Align --> BackboneChoice{Select Backbone Architecture}
-        BackboneChoice -- CNN Option --> IResNet[IResNet-100 CNN Backbone]
+        BackboneChoice -- CNN Option A --> IResNet[IResNet-100 CNN Backbone]
+        BackboneChoice -- CNN Option B --> FPNBackbone[FasterRCNNBackbone Pretrained FPN Features]
         BackboneChoice -- Transformer Option --> ViTFace[FaceVisionTransformer ViT-Face / TransFace]
     end
 
     subgraph Training ["Training and Loss Optimization"]
         IResNet --> Embed[512-d Feature Vector f]
+        FPNBackbone --> Embed
         ViTFace --> Embed
         Embed --> Curricular[CurricularFace Adaptive Margin Loss]
         Embed --> BroadQueue[BroadFace Memory Queue: N_q = 32,768]
@@ -354,8 +356,9 @@ flowchart TD
    - Predicts 40 attribute logits. Detects active occluders (`Wearing_Mask`, `Wearing_Sunglasses`, `Wearing_Hat`). Generates a binary spatial weight mask $M_{spatial}$.
 4. **Generative Pose Normalization (PIM Module)**:
    - For faces with yaw $> 20^\circ$, PIM frontalizes the cropped face into a canonical frontal view before embedding extraction.
-5. **Dual Feature Extraction Backbone Options (IResNet-100 & ViT-Face)**:
-   - **CNN Option (`IResNet-100`)**: SOTA Improved ResNet-100 (`IResNet-100`, block stages $[3, 13, 30, 3]$) for fast inference and standard benchmark baseline.
+5. **Triple Feature Extraction Backbone Options (`IResNet-100`, `FasterRCNNBackbone` & `ViT-Face`)**:
+   - **CNN Option A (`IResNet-100`)**: SOTA Improved ResNet-100 (`IResNet-100`, block stages $[3, 13, 30, 3]$) for fast inference and standard benchmark baseline.
+   - **Pretrained FPN Feature Option (`FasterRCNNBackbone`)**: Extracts intermediate multi-scale feature representations ($P_2, P_3, P_4, P_5$ feature maps) from Faster-RCNN ResNet-50 FPN before the final prediction layer, providing a massive pretrained feature representation head start.
    - **Vision Transformer Option (`FaceVisionTransformer`)**: ViT-Face / TransFace (`vit_face_base` & `vit_face_large` with patch size $P=8$ and $N=196$ tokens) leveraging global Multi-Head Self-Attention ($\text{Softmax}(QK^T / \sqrt{d_k})V$) to dynamically route attention around occluded patch tokens (masks, sunglasses, hands).
 6. **BroadCurricular Loss & Negative Memory Queue**:
    - Both backbones output a $512$-dimensional L2-normalized embedding vector $f$ trained using **CurricularFace** adaptive margin loss ($\mathcal{L}_{Curricular}$) coupled with **BroadFace memory queue** ($N_q = 32,768$).

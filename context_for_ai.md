@@ -67,9 +67,11 @@ flowchart TD
     
     subgraph Stage4 ["Stage 4: SOTA Feature Extraction Options"]
         BackboneInput --> Choice{Backbone Selection}
-        Choice -- CNN Option --> IResNet[IResNet-100 Backbone]
+        Choice -- CNN Option A --> IResNet[IResNet-100 Backbone]
+        Choice -- CNN Option B --> FPNBackbone[FasterRCNNBackbone Pretrained FPN]
         Choice -- Transformer Option --> ViT[FaceVisionTransformer ViT-Face]
         IResNet --> Embed[512-d L2-Normalized Feature Vector f]
+        FPNBackbone --> Embed
         ViT --> Embed
     end
 
@@ -109,7 +111,10 @@ flowchart TD
    - Matches official `deepinsight/insightface` reference implementation.
    - Improved Basic Block: `BN1 (eps=1e-5) -> Conv3x3 (s=1) -> BN2 -> PReLU -> Conv3x3 (s=stride) -> BN3 + Residual`.
    - Stage block counts: `[3, 13, 30, 3]`. Output head: `BN -> Dropout(0.4) -> Linear(512*7*7, 512, bias=False) -> BN -> L2 Norm`.
-2. **Option B: `FaceVisionTransformer` (ViT-Face / TransFace)**:
+2. **Option B: `FasterRCNNBackbone` (Pretrained ResNet-50 FPN Features)**:
+   - Extracts intermediate multi-scale feature maps ($P_2, P_3, P_4, P_5$) from Faster-RCNN before the final bounding box output layer.
+   - Fuses multi-scale representation features and projects to a 512-d L2-normalized embedding vector $f$.
+3. **Option C: `FaceVisionTransformer` (ViT-Face / TransFace)**:
    - Patch Embedding: Image $X \in \mathbb{R}^{3 \times 112 \times 112} \to 196$ patch tokens ($P=8$).
    - Positional Encoding & `[CLS]` token embedding.
    - $12 \times$ Transformer Blocks with Multi-Head Self-Attention ($\text{Softmax}\left(\frac{Q K^T}{\sqrt{d_k}}\right) V$) and GELU MLP.
