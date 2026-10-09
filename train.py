@@ -14,6 +14,7 @@ from torch.amp import autocast, GradScaler
 from config import SystemConfig
 from dataset import WildFaceDataset, UnlabeledFaceDataset, CelebAAttributeDataset
 from losses.broadface_queue import BroadFaceCurricularLoss
+from losses.wing_loss import WingLoss
 from models.backbone import ResNet100Backbone, vit_face_base
 from models.anet_attribute import ANetAttributeParser
 from models.gcn_cluster import GCNLinkPredictor
@@ -244,6 +245,7 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
         
     criterion_bce = nn.BCEWithLogitsLoss()
     criterion_mask = nn.BCELoss()
+    criterion_wing = WingLoss(w=10.0, epsilon=2.0).to(device)
     optimizer = optim.Adam(anet.parameters(), lr=1e-3, weight_decay=1e-4)
     
     phase2_epochs = min(cfg.train.epochs, 30)
