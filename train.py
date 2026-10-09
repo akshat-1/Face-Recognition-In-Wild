@@ -19,6 +19,7 @@ from models.backbone import ResNet100Backbone, vit_face_base, FasterRCNNBackbone
 from models.detector import FasterRCNNFaceDetector
 from models.anet_attribute import ANetAttributeParser
 from models.sam_segmentor import SAMFaceSegmentor
+from models.pim_frontalizer import PIMFrontalizationGAN
 from models.gcn_cluster import GCNLinkPredictor
 
 def get_backbone(cfg: SystemConfig):
@@ -84,6 +85,8 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
     detector.eval()
     sam_segmentor = SAMFaceSegmentor().to(device)
     sam_segmentor.eval()
+    frontalizer = PIMFrontalizationGAN().to(device)
+    frontalizer.eval()
     
     broadface_loss_fn = BroadFaceCurricularLoss(
         in_features=cfg.model.embedding_dim,
@@ -172,6 +175,14 @@ def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is
                 with torch.no_grad():
                     mask_sam = sam_segmentor(images)
                 segmented_images = images * mask_sam
+                
+                # Check head pose yaw angle heuristic during Phase 1 training
+                crop_aspect_ratio = images.shape[3] / float(images.shape[2] + 1e-5)
+                estimated_yaw = (crop_aspect_ratio - 1.0) * 45.0
+                if abs(estimated_yaw) > 20.0:
+                    with torch.no_grad():
+                        segmented_images = frontalizer(segmented_images, yaw_angle=estimated_yaw)
+                        
                 embeddings = backbone(segmented_images)
                 loss = broadface_loss_fn(embeddings, labels)
                 
