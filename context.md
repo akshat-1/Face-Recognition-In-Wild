@@ -348,21 +348,21 @@ flowchart TD
 2. **SAM Foreground Face Segmentation (`SAMFaceSegmentor`)**:
    - Implements 100% faithful Meta AI Segment Anything Model (SAM) architecture (ViT encoder stem, random Gaussian PE matrix, Two-Way Transformer Decoder, and dynamic hypernetwork MLPs).
    - Generates pixel-level foreground segmentation masks $M_{\text{SAM}} \in [0, 1]^{H \times W}$, filtering background clutter and crowd noise.
-2. **Semantic Occlusion Parsing (ANet Component)**:
+3. **Semantic Occlusion Parsing (ANet Component)**:
    - Predicts 40 attribute logits. Detects active occluders (`Wearing_Mask`, `Wearing_Sunglasses`, `Wearing_Hat`). Generates a binary spatial weight mask $M_{spatial}$.
-3. **Generative Pose Normalization (PIM Module)**:
-   - For faces with yaw $> 30^\circ$, PIM frontalizes the cropped face into a canonical frontal view before embedding extraction.
-4. **Dual Feature Extraction Backbone Options (IResNet-100 & ViT-Face)**:
+4. **Generative Pose Normalization (PIM Module)**:
+   - For faces with yaw $> 20^\circ$, PIM frontalizes the cropped face into a canonical frontal view before embedding extraction.
+5. **Dual Feature Extraction Backbone Options (IResNet-100 & ViT-Face)**:
    - **CNN Option (`IResNet-100`)**: SOTA Improved ResNet-100 (`IResNet-100`, block stages $[3, 13, 30, 3]$) for fast inference and standard benchmark baseline.
    - **Vision Transformer Option (`FaceVisionTransformer`)**: ViT-Face / TransFace (`vit_face_base` & `vit_face_large` with patch size $P=8$ and $N=196$ tokens) leveraging global Multi-Head Self-Attention ($\text{Softmax}(QK^T / \sqrt{d_k})V$) to dynamically route attention around occluded patch tokens (masks, sunglasses, hands).
-5. **BroadCurricular Loss & Negative Memory Queue**:
+6. **BroadCurricular Loss & Negative Memory Queue**:
    - Both backbones output a $512$-dimensional L2-normalized embedding vector $f$ trained using **CurricularFace** adaptive margin loss ($\mathcal{L}_{Curricular}$) coupled with **BroadFace memory queue** ($N_q = 32,768$).
-6. **Real-World Dataset Processing (No Synthetic Occlusions)**:
+7. **Real-World Dataset Processing (No Synthetic Occlusions)**:
    - Direct high-throughput loading of real wild datasets containing genuine unconstrained occlusions (WebFace-OCC, LFW, MS1MV2, CelebA).
-7. **DDRC Sparse Dictionary & Residual Reconstructor (Inference & Unknown Gate)**:
+8. **DDRC Sparse Dictionary & Residual Reconstructor (Inference & Unknown Gate)**:
    - Class-specific dictionary matrix $D \in \mathbb{R}^{512 \times M}$ stores identity atoms.
    - Solves $\min_{x, e} \| f - D x - e \|_2^2 + \lambda_1 \|x\|_1 + \lambda_2 \|e\|_1$.
-   - The sparse residual $e$ absorbs occlusion noise; class residuals $r_k$ decide between enrolled identity or `'unknown'`.
+   - Evaluates dynamic adaptive threshold $\tau_{\text{adaptive}} = \min(0.75, 0.55 + 0.15 \cdot \text{OccSeverity})$ to isolate sparse occlusion error $e$ and decide between enrolled identity or `'unknown'`.
 
 ---
 
