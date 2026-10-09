@@ -85,11 +85,12 @@ def run_inference_demo():
     # Prepare dummy input image (224x224)
     dummy_wild_image = torch.randn(1, 3, 224, 224, device=device)
     
-    # Initialize score head so detection succeeds
-    nn.init.zeros_(pipeline.detector.score_head.weight)
-    nn.init.constant_(pipeline.detector.score_head.bias, 5.0)
-    nn.init.zeros_(pipeline.detector.bbox_head.weight)
-    nn.init.constant_(pipeline.detector.bbox_head.bias, 0.5)
+    # Initialize detector heads if present so synthetic detection demo succeeds
+    if hasattr(pipeline.detector, 'score_head'):
+        nn.init.zeros_(pipeline.detector.score_head.weight)
+        nn.init.constant_(pipeline.detector.score_head.bias, 5.0)
+        nn.init.zeros_(pipeline.detector.bbox_head.weight)
+        nn.init.constant_(pipeline.detector.bbox_head.bias, 0.5)
     
     results = pipeline(dummy_wild_image, score_threshold=0.1)
     

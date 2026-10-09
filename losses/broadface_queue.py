@@ -76,6 +76,17 @@ class BroadFaceCurricularLoss(nn.Module):
             self.label_mb = self.label_mb[over_size:]
             self.proxy_mb = self.proxy_mb[over_size:]
 
+    def compensate_weight_drift(self, old_weight: torch.Tensor, new_weight: torch.Tensor):
+        """
+        Calculates classifier weight drift delta_W = W_new - W_old for samples currently in proxy queue
+        and updates proxy representations to eliminate drift error.
+        """
+        if hasattr(self, 'proxy_mb') and self.proxy_mb.numel() > 0 and self.label_mb.numel() > 0:
+            with torch.no_grad():
+                labels = self.label_mb.long()
+                delta_weight = new_weight.data[labels] - old_weight.data[labels]
+                self.proxy_mb.add_(delta_weight)
+
     def compute_curricular(self, x: torch.Tensor, y: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
         y = torch.clamp(y.long(), 0, self.num_classes - 1)
         norm_embeddings = F.normalize(x.float(), p=2, dim=1)
