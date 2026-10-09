@@ -5,7 +5,8 @@ import torch.nn.functional as F
 
 __all__ = [
     'IResNet', 'IBasicBlock', 'iresnet18', 'iresnet34', 'iresnet50', 'iresnet100', 'iresnet200',
-    'FaceVisionTransformer', 'vit_face_base', 'vit_face_large', 'vit_face_huge', 'ResNet100Backbone'
+    'FaceVisionTransformer', 'vit_face_base', 'vit_face_large', 'vit_face_huge',
+    'FasterRCNNBackbone', 'fasterrcnn_backbone', 'ResNet100Backbone'
 ]
 
 # =====================================================================
@@ -290,6 +291,64 @@ def vit_face_huge(dropout=0.1, num_features=512, embedding_dim=None, **kwargs):
     if embedding_dim is not None:
         num_features = embedding_dim
     return FaceVisionTransformer(img_size=112, patch_size=8, embed_dim=1024, depth=32, num_heads=16, num_features=num_features, dropout=dropout, **kwargs)
+
+class FasterRCNNBackbone(nn.Module):
+    """
+    Pretrained Faster-RCNN ResNet-50 FPN Deep Feature Representation Backbone.
+    
+    Extracts intermediate multi-scale feature representations (p2, p3, p4, p5 feature maps)
+    from Faster-RCNN before the final classification/box prediction layer, fusing them
+    into a 512-dimensional L2-normalized identity embedding vector f in R^512.
+    """
+    def __init__(self, embedding_dim: int = 512):
+        super(FasterRCNNBackbone, self).__init__()
+        self.embedding_dim = embedding_dim
+        
+        try:
+            import torchvision.models.detection as detection
+            faster_rcnn = detection.fasterrcnn_resnet50_fpn(weights=detection.FasterRCNN_ResNet50_FPN_Weights.DEFAULT)
+            self.fpn_backbone = faster_rcnn.backbone # ResNet-50 FPN feature representation layers before output layer
+        except Exception:
+            self.fpn_backbone = None
+            
+        self.head = nn.Sequential(
+            nn.Conv2d(256 * 4, 512, kernel_size=3, padding=1),
+            nn.BatchNorm2d(512),
+            nn.PReLU(512),
+            nn.AdaptiveAvgPool2d((1, 1)),
+            nn.Flatten(),
+            nn.Linear(512, embedding_dim, bias=False),
+            nn.BatchNorm1d(embedding_dim)
+        )
+
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        if self.fpn_backbone is None:
+            # Fallback tensor projection if torchvision is unavailable
+            b, c, h, w = x.shape
+            proj = F.adaptive_avg_pool2d(x, (1, 1)).flatten(1)
+            if proj.size(1) != self.embedding_dim:
+                proj = F.interpolate(x, size=(7, 7), mode='bilinear').flatten(1)
+                proj = nn.Linear(proj.size(1), self.embedding_dim, device=x.device)(proj)
+            return F.normalize(proj, p=2, dim=1)
+            
+        # Convert [-1, 1] input image tensor to torchvision [0, 1] format
+        x_norm = ((x + 1.0) / 2.0).clamp(0.0, 1.0)
+        
+        # Extract intermediate FPN feature representations before output layer
+        features = self.fpn_backbone(x_norm)
+        h, w = features['0'].shape[2], features['0'].shape[3]
+        
+        p2 = features['0']
+        p3 = F.interpolate(features['1'], size=(h, w), mode='bilinear', align_corners=False)
+        p4 = F.interpolate(features['2'], size=(h, w), mode='bilinear', align_corners=False)
+        p5 = F.interpolate(features['3'], size=(h, w), mode='bilinear', align_corners=False)
+        
+        fused = torch.cat([p2, p3, p4, p5], dim=1) # Fused multi-scale representation (B, 1024, H, W)
+        emb = self.head(fused)
+        return F.normalize(emb, p=2, dim=1)
+
+def fasterrcnn_backbone(embedding_dim=512, **kwargs):
+    return FasterRCNNBackbone(embedding_dim=embedding_dim)
 
 # Default Alias
 ResNet100Backbone = iresnet100

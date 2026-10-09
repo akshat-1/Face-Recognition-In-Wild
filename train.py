@@ -15,7 +15,7 @@ from config import SystemConfig
 from dataset import WildFaceDataset, UnlabeledFaceDataset, CelebAAttributeDataset
 from losses.broadface_queue import BroadFaceCurricularLoss
 from losses.wing_loss import WingLoss
-from models.backbone import ResNet100Backbone, vit_face_base
+from models.backbone import ResNet100Backbone, vit_face_base, FasterRCNNBackbone
 from models.detector import FasterRCNNFaceDetector
 from models.anet_attribute import ANetAttributeParser
 from models.sam_segmentor import SAMFaceSegmentor
@@ -24,6 +24,8 @@ from models.gcn_cluster import GCNLinkPredictor
 def get_backbone(cfg: SystemConfig):
     if cfg.model.backbone_type == "vit_face_base":
         return vit_face_base(embedding_dim=cfg.model.embedding_dim)
+    elif cfg.model.backbone_type == "fasterrcnn_backbone":
+        return FasterRCNNBackbone(embedding_dim=cfg.model.embedding_dim)
     return ResNet100Backbone(embedding_dim=cfg.model.embedding_dim)
 
 def setup_ddp():
