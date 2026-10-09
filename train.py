@@ -244,6 +244,8 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
     
     anet = ANetAttributeParser(num_attributes=40).to(device)
     sam_segmentor = SAMFaceSegmentor().to(device)
+    frontalizer = PIMFrontalizationGAN().to(device)
+    frontalizer.eval()
     
     # Check if completed Phase 2 pretrained checkpoint exists (skip only if not force_retrain)
     phase2_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase2_anet_attributes.pt")
@@ -284,6 +286,13 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
             images = images.to(device, non_blocking=True)
             attr_targets = attr_targets.to(device, non_blocking=True)
             gt_masks = gt_masks.to(device, non_blocking=True)
+            
+            # Check head pose yaw angle heuristic in Phase 2
+            crop_aspect_ratio = images.shape[3] / float(images.shape[2] + 1e-5)
+            estimated_yaw = (crop_aspect_ratio - 1.0) * 45.0
+            if abs(estimated_yaw) > 20.0:
+                with torch.no_grad():
+                    images = frontalizer(images, yaw_angle=estimated_yaw)
             
             optimizer.zero_grad()
             with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
