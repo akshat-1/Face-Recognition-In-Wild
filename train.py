@@ -306,10 +306,10 @@ def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, 
                 sam_mask = sam_segmentor(images)
                 loss_attr = criterion_bce(attr_logits, attr_targets)
                 
-            # BCELoss & WingLoss evaluated in float32 for numerical stability
-            loss_mask = criterion_mask(occ_mask.float(), gt_masks.float())
-            gt_masks_full = F.interpolate(gt_masks.float(), size=images.shape[2:], mode='nearest')
-            loss_sam = criterion_mask(sam_mask.float(), gt_masks_full)
+            # BCELoss & WingLoss evaluated in float32 for numerical stability (clamped to prevent CUDA assertion failure)
+            loss_mask = criterion_mask(occ_mask.float().clamp(1e-7, 1.0 - 1e-7), gt_masks.float().clamp(0.0, 1.0))
+            gt_masks_full = F.interpolate(gt_masks.float(), size=images.shape[2:], mode='nearest').clamp(0.0, 1.0)
+            loss_sam = criterion_mask(sam_mask.float().clamp(1e-7, 1.0 - 1e-7), gt_masks_full)
             loss_wing = criterion_wing(occ_mask.float(), gt_masks.float())
             
             # Multi-Task Joint Loss: Attributes (BCE) + Spatial Mask (BCE) + SAM Mask (BCE) + Landmark Alignment (WingLoss)

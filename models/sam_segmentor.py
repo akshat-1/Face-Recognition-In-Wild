@@ -257,6 +257,6 @@ class SAMFaceSegmentor(nn.Module):
 
         # Select primary face mask and upsample to original crop size (H, W)
         primary_mask = torch.sigmoid(masks[:, 0:1, :, :]) # (B, 1, 28, 28)
-        face_mask_sam = F.interpolate(primary_mask, size=(H, W), mode='bilinear', align_corners=False)
+        face_mask_sam = F.interpolate(primary_mask, size=(H, W), mode='bilinear', align_corners=False).clamp(0.0, 1.0)
 
         return face_mask_sam

@@ -143,7 +143,7 @@ class ANetAttributeParser(nn.Module):
         
         # 4. Attribute Logits & Spatial Occlusion Map
         attr_logits = self.attribute_head(fused_map)
-        occlusion_mask = self.spatial_mask_head(fused_map) # (B, 1, 7, 7)
+        occlusion_mask = self.spatial_mask_head(fused_map).clamp(0.0, 1.0) # (B, 1, 7, 7)
         
         # 5. Semantic Occlusion Check: Eyeglasses (idx 15), Wearing_Hat (idx 35), or spatial attention drop
         attr_probs = torch.sigmoid(attr_logits)
