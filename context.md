@@ -286,7 +286,326 @@ Large-scale deployments should replace the blockwise reference graph with a
 FAISS or distributed nearest-neighbor implementation. The reference phase
 does not materialize an `N x N x hidden` pair tensor for large collections.
 
-## 9. Inference contract
+## 9. Full execution architecture: training and inference
+
+This section is the complete runtime flow for the current codebase. It separates
+the offline training artifacts from the online recognition path and identifies
+the main Python entry points involved at each stage.
+
+### 9.1 Training entry point and initialization
+
+The training command is:
+
+```bash
+python train.py \
+  --data_dir <identity_face_crop_directory> \
+  --checkpoint_dir <checkpoint_directory> \
+  --backbone iresnet100
+```
+
+`train.py:main()` performs the following initialization:
+
+```text
+CLI arguments
+  -> SystemConfig
+  -> explicit dataset/checkpoint/backbone configuration
+  -> DDP setup when torchrun variables and CUDA are available
+  -> deterministic random seed per rank
+  -> Phase 1 identity training
+  -> optional Phase 2 attribute training
+  -> optional Phase 3 graph adaptation
+```
+
+Missing required paths are not replaced with random data. The identity stream
+must contain real labelled face images arranged in identity folders. The
+unlabeled and CelebA streams are optional and are skipped explicitly when their
+paths are not configured.
+
+### 9.2 Phase 1 — identity backbone training
+
+The implementation is `train_phase1_backbone_curricular()` in `train.py`.
+
+#### Dataset construction
+
+```text
+cfg.dataset.train_data_dir
+  -> NameLabeledFaceDataset
+  -> deterministic image paths and canonical identity names
+  -> image resize/normalization to 112x112 and optional train flip
+  -> (images, identity_labels, is_labeled=True)
+```
+
+Identity labels are validated against the classifier class count. WIDER FACE
+bounding-box images are not silently converted into identity labels.
+
+#### Model construction
+
+```text
+get_backbone(cfg)
+  -> IResNet-100 or generic ViT-Face backbone
+  -> normalized embedding f in R^512
+
+BroadFaceCurricularLoss
+  -> classifier weight matrix
+  -> CurricularFace angular-margin calculation
+  -> EMA curriculum parameter t
+  -> fixed-capacity detached feature/proxy queue
+
+RecognitionModel
+  -> wraps backbone and loss together for DDP synchronization
+```
+
+The detector, optional foreground module, and frontalizer are intentionally not
+inserted here. Adding an untrained preprocessing network to identity training
+would make training and inference distributions inconsistent.
+
+#### Per-batch execution
+
+For every batch, the runtime flow is:
+
+```text
+images, labels
+  -> move to CPU/GPU training device
+  -> backbone(images)
+  -> normalized embeddings
+  -> current-batch CurricularFace loss
+  -> compensated detached queue loss, if the queue is populated
+  -> total loss
+  -> backward pass with optional CUDA AMP
+  -> optimizer.step()
+  -> queue enqueue after the optimizer update
+```
+
+The current batch contributes once to the current loss. Queue features are
+detached so stale embeddings update the classifier without sending stale
+representation gradients through the backbone. In DDP, embeddings and labels
+are gathered before being added to each rank's identical queue.
+
+#### Phase 1 checkpoint flow
+
+At periodic intervals and at the end of training, the following are saved:
+
+```text
+recognition_backbone.pt
+latest_backbone.pt
+phase1_epoch_<N>.pt
+```
+
+Each new checkpoint stores:
+
+```text
+schema_version
+kind = recognition_backbone
+epoch
+backbone_state
+broadface_loss_fn state, including EMA and queue
+optimizer state
+scheduler state
+AMP scaler state
+model/loss configuration
+input size
+class-to-index map
+```
+
+The `latest_backbone.pt` file is used for a true resume, while
+`recognition_backbone.pt` is the completed Phase 1 artifact used by inference.
+
+### 9.3 Phase 2 — annotated attribute training
+
+The optional entry point is `train_phase2_anet_attributes()` in `train.py`.
+
+```text
+celeba_dir + list_attr_celeba annotation
+  -> CelebAAttributeDataset
+  -> real 40-dimensional attribute targets
+  -> ANetAttributeParser
+  -> BCEWithLogitsLoss
+  -> Adam update
+  -> phase2_anet_attributes.pt
+```
+
+Only real CelebA attribute rows are used. Wild images without attribute labels
+are excluded. This phase does not claim to train facial landmarks, SAM masks,
+or PIM without separate annotated data and training routines.
+
+When an attribute checkpoint is loaded for inference:
+
+```text
+aligned crop + detector landmarks
+  -> landmark-aware ANet local branch
+  -> 40 attribute logits
+  -> optional occlusion-quality indicator
+```
+
+The attribute parser is never silently enabled with random weights. A caller
+requesting an optional attribute/mask/frontalization branch without a matching
+checkpoint receives an explicit error.
+
+### 9.4 Phase 3 — global unlabeled graph adaptation
+
+The optional entry point is `train_phase3_semi_supervised_gcn()` in `train.py`.
+
+```text
+unlabeled face-crop dataset
+  -> frozen Phase 1 backbone
+  -> one embedding per globally indexed sample
+  -> GCN edge predictor trained on labelled identity pairs
+  -> global pseudo-label graph
+  -> confidence filtering and globally unique cluster IDs
+  -> labelled + pseudo-labelled backbone fine-tuning
+  -> phase3_semi_gcn_predictor.pt
+  -> phase3_adapted_backbone.pt
+```
+
+For small graphs, the trained GCN edge head predicts pair probabilities. For
+large graphs, `generate_global_pseudo_labels()` constructs a blockwise,
+nonnegative nearest-neighbour graph to avoid an `N x N x hidden` allocation.
+Pseudo-label IDs are assigned once for the complete graph; they do not restart
+at each DataLoader batch.
+
+Fine-tuning uses:
+
+```text
+L_total = L_labelled + lambda_semi * L_pseudo
+```
+
+The adapted backbone is saved separately so the original supervised checkpoint
+remains reproducible.
+
+### 9.5 Checkpoint loading before inference
+
+`OccuPoseBroadDictPipeline.load_pretrained_weights()` searches for the newest
+compatible backbone artifact in this order:
+
+```text
+phase3_adapted_backbone.pt
+recognition_backbone.pt
+latest_backbone.pt
+phase1_backbone_curricular.pt
+phase1_epoch_100.pt
+```
+
+The loader checks the checkpoint schema/kind and uses the stored architecture
+metadata when rebuilding the backbone. It removes only a known DDP
+`module.` prefix and rejects unsupported checkpoint metadata instead of
+silently continuing with incompatible state.
+
+The optional Phase 2 and Phase 3 artifacts are then loaded separately:
+
+```text
+phase2_anet_attributes.pt
+  -> optional attribute parser and any explicitly stored preprocessing state
+
+phase3_semi_gcn_predictor.pt
+  -> optional GCN adapter
+```
+
+Loading a backbone does not create an identity gallery. Enrollment is a separate
+required operation.
+
+### 9.6 Gallery enrollment flow
+
+`OccuPoseBroadDictPipeline.enroll_dataset()` builds the open-set gallery:
+
+```text
+identity image path
+  -> RGB load
+  -> shared 112x112 evaluation transform
+  -> shared crop/alignment/preprocessing path
+  -> recognition backbone
+  -> normalized embedding
+  -> identity-specific gallery atoms
+  -> DDRCClassifier.enroll_gallery()
+```
+
+The gallery uses real identity images and their canonical names. Phase 1
+classifier weights are not treated as enrollment samples. Multiple samples per
+identity can be retained as multiple dictionary atoms, allowing the open-set
+solver to model within-person variation.
+
+### 9.7 Online inference flow
+
+The normal CLI entry point is `predict_occluded_faces.py`. Its per-image flow
+is:
+
+```text
+image file
+  -> PIL RGB load
+  -> deterministic resize to model scene resolution
+  -> normalization to [-1, 1]
+  -> OccuPoseBroadDictPipeline.forward()
+```
+
+Inside `forward()`:
+
+```text
+1. Detector
+   image tensor
+     -> YuNet and/or MTCNN
+     -> candidate boxes, scores, five-point landmarks
+     -> index-preserving Gaussian Soft-NMS
+
+2. Empty-detection gate
+   no boxes -> return []
+   no fabricated full-image detection is created
+
+3. Per-face crop
+   box coordinates
+     -> clamp to image bounds
+     -> reject crops smaller than the minimum valid size
+     -> crop face patch
+     -> convert landmarks from image coordinates to crop coordinates
+
+4. Alignment
+   crop + local five-point landmarks
+     -> similarity transform to canonical 112x112 coordinates
+     -> box-only resize fallback when landmarks are invalid
+     -> aligned quality flag
+
+5. Optional preprocessing
+   aligned crop
+     -> checkpointed soft foreground mask, if enabled
+     -> landmark-aware attributes, if available
+     -> landmark-derived yaw/pitch/roll quality signal
+     -> checkpointed frontalizer only when the pose gate is exceeded
+
+6. Recognition embedding
+   processed 112x112 crop
+     -> configured backbone
+     -> L2-normalized embedding f
+
+7. Open-set decision
+   f + enrolled dictionary
+     -> sparse coefficients x and error e
+     -> class-specific residuals r_k
+     -> residual and margin gates
+     -> identity name or 'unknown'
+
+8. Result assembly
+   detector score, recognition score, pose, alignment state, residuals,
+   attributes, and original model-space box
+```
+
+The result is sorted by combined display confidence, but the raw detector and
+recognition scores remain separate in the output contract. The prediction CLI
+maps the model-space box from the resized scene back to the original image
+coordinates before drawing annotations and writing CSV output.
+
+### 9.8 Inference failure and safety paths
+
+```text
+missing detector backend       -> empty detections -> []
+missing gallery                -> detected faces classified as unknown
+missing optional checkpoint   -> optional branch disabled or explicit error
+invalid crop                  -> face skipped, other faces continue
+invalid image                 -> clear input/decode error
+missing WIDER ground truth    -> evaluation aborts, no AP is emitted
+```
+
+These paths are intentional: a failed optional module must not turn into a
+random identity, a fabricated face, or a misleading benchmark score.
+
+## 10. Inference contract
 
 `OccuPoseBroadDictPipeline.forward()` accepts a normalized tensor with shape
 `(1, 3, H, W)` and returns one result per detected face. Each result contains:
@@ -317,7 +636,7 @@ Gallery enrollment must happen before identity classification. Without a
 gallery, valid detections are returned as `unknown` rather than assigned to a
 random identity.
 
-## 10. Checkpoint compatibility
+## 11. Checkpoint compatibility
 
 All new training artifacts use `schema_version=2`. A checkpoint loader validates
 the required state and removes only an expected DDP `module.` prefix. It does
@@ -348,7 +667,7 @@ checkpoints/phase3_semi_gcn_predictor.pt
 checkpoints/phase3_adapted_backbone.pt
 ```
 
-## 11. WIDER FACE evaluation
+## 12. WIDER FACE evaluation
 
 `eval_widerface.py` is a ground-truth-required evaluator. It:
 
@@ -364,7 +683,7 @@ If ground truth is absent, evaluation stops with an explicit error. The existing
 this safeguard and contains `GroundTruth_Loaded=False`; it must not be used as
 a WIDER FACE AP claim.
 
-## 12. Source mapping and limits
+## 13. Source mapping and limits
 
 The implementation is informed by the repository's extracted papers:
 
@@ -383,7 +702,7 @@ research-specific GAN discriminators, and official GCN clustering datasets are
 not assumed to be present. Optional modules are therefore explicit and
 checkpoint-gated rather than silently used in a random state.
 
-## 13. Verification commands
+## 14. Verification commands
 
 From the repository root:
 
