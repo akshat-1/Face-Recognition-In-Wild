@@ -9,11 +9,11 @@ from PIL import Image
 
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
-from dataset import DatasetConfigurationError, NameLabeledFaceDataset, UnlabeledWildDataset
+from dataset import BoundingBoxFaceDataset, DatasetConfigurationError, NameLabeledFaceDataset, UnlabeledWildDataset
 from losses.broadface_queue import BroadFaceMemoryQueue
 from losses.curricular_loss import CurricularFaceLoss
 from models.ddrc_solver import DDRCClassifier
-from models.detector import soft_nms_pytorch
+from models.detector import TorchvisionFaceDetector, soft_nms_pytorch
 from models.gcn_cluster import GCNLinkPredictor
 from pipeline.alignment import align_face_crop, estimate_pose_from_landmarks
 
@@ -39,6 +39,38 @@ class TestCorrectedContracts(unittest.TestCase):
         with tempfile.TemporaryDirectory() as root:
             with self.assertRaises((FileNotFoundError, DatasetConfigurationError)):
                 UnlabeledWildDataset(root_dir=root)
+
+    def test_aqua_yolo_detection_targets_support_parallel_labels_and_multiple_boxes(self):
+        with tempfile.TemporaryDirectory() as root:
+            images = os.path.join(root, "darknet", "mask-dataset", "images", "train")
+            labels = os.path.join(root, "darknet", "mask-dataset", "labels", "train")
+            os.makedirs(images)
+            os.makedirs(labels)
+            image_path = os.path.join(images, "sample.jpg")
+            Image.new("RGB", (100, 50), (120, 80, 40)).save(image_path)
+            with open(os.path.join(labels, "sample.txt"), "w", encoding="utf-8") as handle:
+                handle.write("7 0.50 0.50 0.40 0.80\n3 0.20 0.20 0.10 0.20\n")
+            unsplit_images = os.path.join(root, "facemaskyolo", "data", "images")
+            unsplit_labels = os.path.join(root, "facemaskyolo", "data", "labels")
+            os.makedirs(unsplit_images)
+            os.makedirs(unsplit_labels)
+            Image.new("RGB", (40, 40), (20, 40, 80)).save(os.path.join(unsplit_images, "other.jpg"))
+            with open(os.path.join(unsplit_labels, "other.txt"), "w", encoding="utf-8") as handle:
+                handle.write("0 0.50 0.50 0.50 0.50\n")
+
+            dataset = BoundingBoxFaceDataset(
+                root_dir=root,
+                is_train=False,
+                detection_mode=True,
+                split="train",
+            )
+            image, target = dataset[0]
+            self.assertEqual(tuple(image.shape), (3, 50, 100))
+            self.assertEqual(len(dataset), 2)
+            self.assertEqual(tuple(target["boxes"].shape), (2, 4))
+            self.assertEqual(target["labels"].tolist(), [1, 1])
+            self.assertEqual(target["boxes"][0].tolist(), [30.0, 5.0, 70.0, 45.0])
+            self.assertEqual(target["boxes"][1].tolist(), [15.0, 5.0, 25.0, 15.0])
 
     def test_alignment_and_landmark_pose(self):
         crop = torch.zeros(1, 3, 112, 112)
@@ -99,6 +131,21 @@ class TestCorrectedContracts(unittest.TestCase):
             restored.load_state_dict(torch.load(path, map_location="cpu"))
             self.assertTrue(torch.equal(original.feature_mb, restored.feature_mb))
             self.assertTrue(torch.equal(original.label_mb, restored.label_mb))
+
+    def test_aqua_detector_checkpoint_round_trip(self):
+        with tempfile.TemporaryDirectory() as root:
+            original = TorchvisionFaceDetector(num_classes=2, pretrained_backbone=False)
+            path = os.path.join(root, "face_detector.pt")
+            torch.save({
+                "schema_version": 2,
+                "kind": "face_detector",
+                "num_classes": 2,
+                "model_state": original.model.state_dict(),
+            }, path)
+            restored = TorchvisionFaceDetector(num_classes=2, checkpoint_path=path, pretrained_backbone=False)
+            self.assertTrue(restored.loaded_checkpoint)
+            first_key = next(iter(original.model.state_dict()))
+            self.assertTrue(torch.equal(original.model.state_dict()[first_key], restored.model.state_dict()[first_key]))
 
 
 if __name__ == "__main__":

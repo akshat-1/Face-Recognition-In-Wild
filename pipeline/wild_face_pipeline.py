@@ -33,6 +33,7 @@ class OccuPoseBroadDictPipeline(nn.Module):
         backbone_type: str = "iresnet100",
         detector_backend: str = "auto",
         detector_weights_dir: str = "./weights",
+        detector_checkpoint: Optional[str] = None,
         pose_gate_degrees: float = 35.0,
         use_frontalizer: bool = False,
         use_attributes: bool = False,
@@ -48,7 +49,11 @@ class OccuPoseBroadDictPipeline(nn.Module):
         self._attributes_requested = bool(use_attributes)
         self._foreground_requested = bool(use_foreground_mask)
         self._frontalizer_requested = bool(use_frontalizer)
-        self.detector = WildFaceDetector(weights_dir=detector_weights_dir, backend=detector_backend)
+        self.detector = WildFaceDetector(
+            weights_dir=detector_weights_dir,
+            backend=detector_backend,
+            detector_checkpoint=detector_checkpoint,
+        )
         if backbone_type == "vit_face_base":
             self.backbone = vit_face_base(embedding_dim=feature_dim)
         elif backbone_type == "iresnet100":
@@ -93,6 +98,10 @@ class OccuPoseBroadDictPipeline(nn.Module):
             device = next(self.parameters()).device
         self.to(device)
         loaded = False
+        detector_path = os.path.join(checkpoint_dir, "face_detector.pt")
+        if os.path.isfile(detector_path) and hasattr(self.detector, "load_trained_checkpoint"):
+            self.detector.load_trained_checkpoint(detector_path, device=device)
+            print(f"Loaded AQUA face detector from {detector_path}")
         p1_candidates = [
             os.path.join(checkpoint_dir, "phase3_adapted_backbone.pt"),
             os.path.join(checkpoint_dir, "recognition_backbone.pt"),

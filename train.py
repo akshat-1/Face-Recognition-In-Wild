@@ -1,8 +1,8 @@
-"""Training entry point for the corrected recognition pipeline.
+"""Training entry point for the corrected AQUA face pipeline.
 
-Recognition training operates on identity-labelled face crops. Detection and
-alignment are inference/data-preparation concerns; random untrained masks and
-generators are never inserted into the backbone training path.
+Phase 0 trains the face detector from real ``bb_label`` YOLO boxes. Phase 1
+trains identity embeddings from ``name_label`` face crops; detection labels do
+not contain identity supervision and are therefore not mixed into that loss.
 """
 
 import argparse
@@ -21,10 +21,11 @@ from torch.utils.data.distributed import DistributedSampler
 from PIL import Image
 
 from config import SystemConfig
-from dataset import CelebAAttributeDataset, UnlabeledFaceDataset, WildFaceDataset, get_default_transform
+from dataset import BoundingBoxFaceDataset, CelebAAttributeDataset, UnlabeledFaceDataset, WildFaceDataset, get_default_transform
 from losses.broadface_queue import BroadFaceCurricularLoss
 from models.anet_attribute import ANetAttributeParser
 from models.backbone import FasterRCNNBackbone, ResNet100Backbone, vit_face_base
+from models.detector import TorchvisionFaceDetector
 from models.gcn_cluster import GCNLinkPredictor
 
 
@@ -102,6 +103,112 @@ def _save_phase1(path, epoch, backbone, loss_fn, optimizer, scheduler, scaler, c
         "loss_config": asdict(cfg.loss),
         "class_to_idx": dict(class_to_idx),
     }, path)
+
+
+def _detection_collate(batch):
+    images, targets = zip(*batch)
+    return list(images), list(targets)
+
+
+def train_phase0_face_detector(
+    cfg: SystemConfig,
+    device: torch.device,
+    is_ddp: bool = False,
+    rank: int = 0,
+    local_rank: int = 0,
+    world_size: int = 1,
+    force_retrain: bool = False,
+):
+    """Train the class-agnostic face detector from AQUA ``bb_label`` targets."""
+    if not cfg.dataset.bb_data_dir:
+        if rank == 0:
+            print("Phase 0 skipped: no bb_data_dir configured.")
+        return None
+
+    has_train_split = any(
+        os.path.basename(os.path.normpath(current)).lower() == "train"
+        for current, _, _ in os.walk(cfg.dataset.bb_data_dir)
+    )
+    dataset = BoundingBoxFaceDataset(
+        root_dir=cfg.dataset.bb_data_dir,
+        is_train=True,
+        image_size=cfg.dataset.image_size,
+        detection_mode=True,
+        split="train" if has_train_split else None,
+    )
+    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_ddp else None
+    loader = DataLoader(
+        dataset,
+        batch_size=cfg.train.detector_batch_size,
+        sampler=sampler,
+        shuffle=sampler is None,
+        num_workers=cfg.dataset.num_workers,
+        pin_memory=device.type == "cuda",
+        collate_fn=_detection_collate,
+    )
+    checkpoint_dir = cfg.train.checkpoint_dir
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    checkpoint_path = os.path.join(checkpoint_dir, "face_detector.pt")
+    detector = TorchvisionFaceDetector(
+        num_classes=2,
+        pretrained_backbone=cfg.train.detector_pretrained_backbone,
+    ).to(device)
+
+    if os.path.isfile(checkpoint_path) and not force_retrain:
+        detector.load_checkpoint(checkpoint_path)
+        if rank == 0:
+            print(f"Loaded completed bb_label detector checkpoint: {checkpoint_path}")
+        return checkpoint_path
+
+    if is_ddp:
+        detector.model = nn.parallel.DistributedDataParallel(
+            detector.model,
+            device_ids=[local_rank],
+            output_device=local_rank,
+            find_unused_parameters=False,
+        )
+    optimizer = optim.SGD(
+        detector.model.parameters(),
+        lr=cfg.train.detector_learning_rate,
+        momentum=0.9,
+        weight_decay=5e-4,
+    )
+    scaler = GradScaler("cuda", enabled=cfg.model.fp16 and device.type == "cuda")
+    for epoch in range(1, cfg.train.detector_epochs + 1):
+        detector.train()
+        if sampler is not None:
+            sampler.set_epoch(epoch)
+        running_loss = 0.0
+        for images, targets in loader:
+            images = [image.to(device, non_blocking=True) for image in images]
+            targets = [
+                {key: value.to(device, non_blocking=True) for key, value in target.items()}
+                for target in targets
+            ]
+            optimizer.zero_grad(set_to_none=True)
+            with autocast("cuda", enabled=cfg.model.fp16 and device.type == "cuda"):
+                loss_dict = detector.detection_loss(images, targets)
+                loss = sum(loss_value for loss_value in loss_dict.values())
+            scaler.scale(loss).backward()
+            scaler.step(optimizer)
+            scaler.update()
+            running_loss += float(loss.detach().item())
+        if rank == 0:
+            print(f"Phase 0 detector epoch {epoch}/{cfg.train.detector_epochs} loss={running_loss / max(1, len(loader)):.5f}")
+
+    if rank == 0:
+        raw_model = detector.model.module if hasattr(detector.model, "module") else detector.model
+        torch.save({
+            "schema_version": 2,
+            "kind": "face_detector",
+            "architecture": "fasterrcnn_resnet50_fpn",
+            "num_classes": 2,
+            "epoch": cfg.train.detector_epochs,
+            "model_state": raw_model.state_dict(),
+        }, checkpoint_path)
+    if is_ddp and dist.is_initialized():
+        dist.barrier()
+    return checkpoint_path
 
 
 def train_phase1_backbone_curricular(
@@ -384,12 +491,15 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
 def main():
     parser = argparse.ArgumentParser(description="OccuPose-BroadDictNet training")
     parser.add_argument("--data_dir", default=None)
+    parser.add_argument("--bb_dir", default=None, help="Path to AQUA bb_label YOLO/Darknet detection dataset")
     parser.add_argument("--unlabeled_dir", default=None)
     parser.add_argument("--celeba_dir", default=None)
     parser.add_argument("--backbone", choices=["iresnet100", "vit_face_base", "fasterrcnn_backbone"], default=None)
     parser.add_argument("--checkpoint_dir", default=None)
     parser.add_argument("--epochs", type=int, default=None)
     parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--detector_batch_size", type=int, default=None)
+    parser.add_argument("--detector_epochs", type=int, default=None)
     parser.add_argument("--lr", type=float, default=None)
     parser.add_argument("--fp16", action="store_true")
     parser.add_argument("--resume", action="store_true")
@@ -402,16 +512,29 @@ def main():
     is_ddp, rank, local_rank, world_size, device = setup_ddp()
     cfg = SystemConfig()
     if args.data_dir is not None: cfg.dataset.train_data_dir = args.data_dir
+    if args.bb_dir is not None: cfg.dataset.bb_data_dir = args.bb_dir
     if args.unlabeled_dir is not None: cfg.dataset.unlabeled_data_dir = args.unlabeled_dir
     if args.celeba_dir is not None: cfg.dataset.celeba_dir = args.celeba_dir
     if args.backbone is not None: cfg.model.backbone_type = args.backbone
     if args.checkpoint_dir is not None: cfg.train.checkpoint_dir = args.checkpoint_dir
     if args.epochs is not None: cfg.train.epochs = args.epochs
     if args.batch_size is not None: cfg.train.batch_size = args.batch_size
+    if args.detector_batch_size is not None: cfg.train.detector_batch_size = args.detector_batch_size
+    if args.detector_epochs is not None: cfg.train.detector_epochs = args.detector_epochs
     if args.lr is not None: cfg.train.learning_rate = args.lr
     cfg.model.fp16 = args.fp16 or (device.type == "cuda")
     cfg.dataset.allow_synthetic_fixtures = args.allow_synthetic_fixtures
     seed_everything(cfg.train.seed + rank)
+
+    train_phase0_face_detector(
+        cfg,
+        device,
+        is_ddp=is_ddp,
+        rank=rank,
+        local_rank=local_rank,
+        world_size=world_size,
+        force_retrain=args.retrain_all,
+    )
 
     backbone, num_classes = train_phase1_backbone_curricular(
         cfg, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank,

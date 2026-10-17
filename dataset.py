@@ -13,6 +13,7 @@ except Exception:
     transforms = None
 
 VALID_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
+DETECTION_SPLIT_NAMES = frozenset({'train', 'test', 'val', 'validate', 'validation'})
 
 
 class DatasetConfigurationError(ValueError):
@@ -84,6 +85,14 @@ def get_default_transform(image_size=(112, 112), is_train=True):
             pass
     return PurePyTorchImageTransform(image_size=image_size, is_train=is_train)
 
+
+def pil_to_float_tensor(img: Image.Image) -> torch.Tensor:
+    """Convert an RGB PIL image to a detector tensor in [0, 1] without resizing."""
+    img = img.convert("RGB")
+    width, height = img.size
+    raw = bytearray(img.tobytes())
+    return torch.frombuffer(raw, dtype=torch.uint8).view(height, width, 3).permute(2, 0, 1).float() / 255.0
+
 def parse_yolo_txt(txt_path: str):
     """
     Parses YOLO format bounding box annotation file (.txt).
@@ -96,7 +105,8 @@ def parse_yolo_txt(txt_path: str):
                     parts = line.strip().split()
                     if len(parts) >= 5:
                         try:
-                            vals = [float(x) for x in parts[1:5]]
+                            class_id = int(float(parts[0]))
+                            vals = [class_id] + [float(x) for x in parts[1:5]]
                             bboxes.append(vals)
                         except ValueError:
                             pass
@@ -270,11 +280,14 @@ class BoundingBoxFaceDataset(data.Dataset):
     Dynamic Dataset Loader for 'bb_label/' directory.
     Supports dynamic rescanning of bounding box datasets uploaded in parallel.
     """
-    def __init__(self, root_dir: str = None, bb_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112), allow_synthetic: bool = False):
+    def __init__(self, root_dir: str = None, bb_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112), allow_synthetic: bool = False, detection_mode: bool = False, split: str = None):
         super(BoundingBoxFaceDataset, self).__init__()
         self.bb_label_dir = root_dir if root_dir is not None else bb_label_dir
         self.image_size = image_size
         self.allow_synthetic = allow_synthetic
+        self.detection_mode = detection_mode
+        self.is_train = is_train
+        self.split = split.lower() if split else None
         self.transform = transform if transform is not None else get_default_transform(image_size, is_train)
         self.samples = []
         self.rescan()
@@ -319,6 +332,15 @@ class BoundingBoxFaceDataset(data.Dataset):
                     for f in sorted(files):
                         if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                             img_path = os.path.join(root, f)
+                            path_components = {
+                                component.lower() for component in os.path.normpath(root).split(os.sep)
+                            }
+                            explicit_splits = path_components & DETECTION_SPLIT_NAMES
+                            # Keep unsplit AQUA subsets (for example
+                            # facemaskyolo/data/images) alongside the explicit
+                            # Darknet train split, while excluding test/val.
+                            if self.split and explicit_splits and self.split not in explicit_splits:
+                                continue
                             base_name = os.path.splitext(f)[0]
                             
                             txt_path = os.path.join(root, base_name + ".txt")
@@ -327,7 +349,11 @@ class BoundingBoxFaceDataset(data.Dataset):
                                 txt_path = os.path.join(labels_root, base_name + ".txt")
                                 
                             bboxes = parse_yolo_txt(txt_path)
-                            self.samples.append((img_path, bboxes, 0))
+                            # Detection training needs positive targets. Images
+                            # without a readable annotation are not silently
+                            # converted into a fake class-0 sample.
+                            if bboxes:
+                                self.samples.append((img_path, bboxes, 0))
 
     def __len__(self):
         return len(self.samples)
@@ -343,9 +369,39 @@ class BoundingBoxFaceDataset(data.Dataset):
         try:
             img = Image.open(path).convert('RGB')
             w_img, h_img = img.size
+
+            if self.detection_mode:
+                boxes = []
+                labels = []
+                for class_id_yolo, xc, yc, w_box, h_box in self._iter_yolo_boxes(bboxes):
+                    x1 = max(0.0, (xc - w_box / 2.0) * w_img)
+                    y1 = max(0.0, (yc - h_box / 2.0) * h_img)
+                    x2 = min(float(w_img), (xc + w_box / 2.0) * w_img)
+                    y2 = min(float(h_img), (yc + h_box / 2.0) * h_img)
+                    if x2 > x1 + 1.0 and y2 > y1 + 1.0:
+                        boxes.append([x1, y1, x2, y2])
+                        # Detection is intentionally class-agnostic: all
+                        # foreground YOLO rows describe a face, while the
+                        # torchvision background class remains 0. This keeps
+                        # the detector compatible with AQUA subsets whose mask
+                        # class IDs differ.
+                        labels.append(1)
+
+                if self.is_train and torch.rand(1).item() > 0.5:
+                    img = img.transpose(Image.FLIP_LEFT_RIGHT)
+                    boxes = [[w_img - x2, y1, w_img - x1, y2] for x1, y1, x2, y2 in boxes]
+                image_tensor = pil_to_float_tensor(img)
+                target = {
+                    "boxes": torch.tensor(boxes, dtype=torch.float32).reshape(-1, 4),
+                    "labels": torch.tensor(labels, dtype=torch.int64),
+                    "image_id": torch.tensor([idx], dtype=torch.int64),
+                    "area": torch.tensor([(box[2] - box[0]) * (box[3] - box[1]) for box in boxes], dtype=torch.float32),
+                    "iscrowd": torch.zeros(len(boxes), dtype=torch.int64),
+                }
+                return image_tensor, target
             
             if bboxes and len(bboxes) > 0:
-                xc, yc, w_box, h_box = bboxes[0]
+                _, xc, yc, w_box, h_box = next(self._iter_yolo_boxes(bboxes))
                 x1 = max(0, int((xc - w_box / 2.0) * w_img))
                 y1 = max(0, int((yc - h_box / 2.0) * h_img))
                 x2 = min(w_img, int((xc + w_box / 2.0) * w_img))
@@ -359,6 +415,15 @@ class BoundingBoxFaceDataset(data.Dataset):
             raise RuntimeError(f"Could not decode bounding-box image {path}: {exc}") from exc
             
         return img_tensor, class_id, True
+
+    @staticmethod
+    def _iter_yolo_boxes(bboxes):
+        """Yield ``class_id, xc, yc, width, height`` for parsed YOLO rows."""
+        for row in bboxes:
+            if len(row) == 4:
+                yield 0, *row
+            else:
+                yield int(row[0]), *row[1:5]
 
 
 class UnifiedWildFaceDataset(data.Dataset):

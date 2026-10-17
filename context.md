@@ -44,12 +44,14 @@ document and with real trained checkpoints.
 ```text
 config.py                         Dataclass configuration and safety flags
 dataset.py                        Fail-fast task-specific image datasets
-train.py                          Phase 1 identity, Phase 2 attributes,
-                                  optional Phase 3 graph adaptation
+train.py                          Phase 0 detector, Phase 1 identity,
+                                  Phase 2 attributes, optional Phase 3 graph
+                                  adaptation
 pipeline/alignment.py             Canonical five-point alignment and pose signal
 pipeline/wild_face_pipeline.py   Inference, enrollment, and output contract
 
-models/detector.py                YuNet/MTCNN facade and indexed Soft-NMS
+models/detector.py                AQUA detector, YuNet/MTCNN facade,
+                                  and indexed Soft-NMS
 models/backbone.py                IResNet and ViT-style embedding backbones
 models/anet_attribute.py          Optional 40-label CelebA attribute parser
 models/sam_segmentor.py           Optional custom foreground-mask module
@@ -88,8 +90,12 @@ the correct score and landmarks. If no usable detector is available, all three
 outputs are empty. The legacy random LNet fallback is no longer used.
 
 `FasterRCNNFaceDetector` remains as a compatibility facade, but generic COCO
-Faster R-CNN is not treated as a face detector. A face-trained detector would
-need its own checkpoint and benchmark report before being enabled.
+Faster R-CNN is not treated as a face detector. When
+`checkpoints/face_detector.pt` (or an explicitly supplied detector checkpoint)
+exists, the facade loads the class-agnostic Faster R-CNN trained from AQUA
+`bb_label` boxes. Otherwise it falls back to the configured external face
+detector backend. The trained detector returns zero landmarks, which correctly
+selects the box-resize alignment fallback.
 
 ### Alignment contract
 
@@ -142,6 +148,17 @@ does not fabricate occlusion rectangles as segmentation ground truth.
 Attribute prediction, occlusion quality, detection, and identity recognition
 are separate tasks. They must not share a target tensor merely because the
 image source is the same.
+
+### AQUA bounding-box dataset
+
+`BoundingBoxFaceDataset(..., detection_mode=True)` reads YOLO/Darknet labels
+from `bb_label`. It supports both labels beside the image files and the AQUA
+parallel `images/` and `labels/` layout, including explicit `train` directory
+selection. All foreground YOLO rows are mapped to torchvision class `1` (face)
+and background remains class `0`; mask-condition IDs are not assumed to be
+consistent across subsets. The detection target contains all valid boxes in
+pixel-space `xyxy` format, plus `area` and `iscrowd` fields. These annotations
+train localization only; identity recognition still uses `name_label`.
 
 ## 5. Recognition backbone and losses
 
@@ -239,6 +256,27 @@ crashes while reading a nonexistent second residual.
 
 ## 8. Training phases
 
+### Phase 0 — AQUA face detector
+
+When `bb_data_dir`/`--bb_dir` is configured, `train.py` runs
+`train_phase0_face_detector()` before recognition training:
+
+```text
+bb_label YOLO/Darknet annotations
+  -> BoundingBoxFaceDataset(detection_mode=True)
+  -> class-agnostic Faster R-CNN
+  -> detector loss and optimizer update
+  -> face_detector.pt
+```
+
+The train split is selected when an explicit `train` directory exists; unsplit
+AQUA subsets are retained alongside it, while explicit test/validation folders
+are excluded. Single-layout datasets are scanned without a split filter. The default
+detector batch size is `2`, independent of the recognition batch size. The
+checkpoint stores the detector state, class count, architecture, epoch, and
+schema. A later run loads this completed artifact unless `--retrain_all` is
+passed. Detection training does not create identity labels.
+
 ### Phase 1 — identity backbone
 
 `train.py` trains only on real identity-labelled face crops:
@@ -252,8 +290,9 @@ identity dataset
   -> checkpoint
 ```
 
-Untrained detector, mask, and frontalizer modules are not inserted into this
-path. The checkpoint stores:
+The trained detector is not inserted into the identity loss; it is used by the
+online inference path before alignment. Other untrained mask and frontalizer
+modules are not inserted into this path. The checkpoint stores:
 
 * backbone state;
 * classifier/curriculum/queue state;
@@ -298,6 +337,7 @@ The training command is:
 
 ```bash
 python train.py \
+  --bb_dir <AQUA_bb_label_directory> \
   --data_dir <identity_face_crop_directory> \
   --checkpoint_dir <checkpoint_directory> \
   --backbone iresnet100
@@ -311,6 +351,7 @@ CLI arguments
   -> explicit dataset/checkpoint/backbone configuration
   -> DDP setup when torchrun variables and CUDA are available
   -> deterministic random seed per rank
+  -> Phase 0 AQUA detector training or checkpoint load
   -> Phase 1 identity training
   -> optional Phase 2 attribute training
   -> optional Phase 3 graph adaptation

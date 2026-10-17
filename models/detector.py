@@ -237,23 +237,119 @@ class SOTAFaceDetector(nn.Module):
         return boxes, scores, landmarks[keep]
 
 
+class TorchvisionFaceDetector(nn.Module):
+    """Trainable class-agnostic Faster R-CNN backed by AQUA YOLO boxes.
+
+    Every foreground YOLO row is treated as a face (class 1); this avoids
+    assuming that the mask-condition class IDs are identical across AQUA
+    subsets. Landmark coordinates are unavailable from this detector and are
+    represented by zeros, so the pipeline uses its box-resize alignment
+    fallback unless an external landmark backend is also enabled.
+    """
+
+    def __init__(self, num_classes: int = 2, checkpoint_path: Optional[str] = None,
+                 pretrained_backbone: bool = True):
+        super().__init__()
+        try:
+            from torchvision.models.detection import (
+                FasterRCNN_ResNet50_FPN_Weights,
+                fasterrcnn_resnet50_fpn,
+            )
+            from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+        except Exception as exc:
+            raise ImportError("Torchvision Faster R-CNN is required for bb_label detector training") from exc
+
+        # A complete detector checkpoint already contains the backbone. Avoid
+        # a needless COCO download when reconstructing that artifact offline.
+        weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT if pretrained_backbone and not checkpoint_path else None
+        try:
+            model = fasterrcnn_resnet50_fpn(weights=weights, weights_backbone=None)
+        except Exception:
+            # Offline AQUA jobs may not have the COCO checkpoint cached. A
+            # randomly initialized detector is still trainable from bb_label;
+            # the training log records that this fallback was selected.
+            model = fasterrcnn_resnet50_fpn(weights=None, weights_backbone=None)
+        in_features = model.roi_heads.box_predictor.cls_score.in_features
+        model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+        self.model = model
+        self.num_classes = num_classes
+        self.loaded_checkpoint = False
+        if checkpoint_path:
+            self.load_checkpoint(checkpoint_path)
+
+    def load_checkpoint(self, checkpoint_path: str) -> None:
+        if not os.path.isfile(checkpoint_path):
+            raise FileNotFoundError(f"Face detector checkpoint not found: {checkpoint_path}")
+        checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        if checkpoint.get("kind") not in (None, "face_detector"):
+            raise ValueError(f"Not a face detector checkpoint: {checkpoint_path}")
+        saved_classes = int(checkpoint.get("num_classes", self.num_classes))
+        if saved_classes != self.num_classes:
+            raise ValueError(f"Detector class mismatch: checkpoint={saved_classes}, model={self.num_classes}")
+        state = checkpoint.get("model_state", checkpoint.get("state_dict"))
+        if state is None:
+            raise ValueError(f"Detector checkpoint has no model state: {checkpoint_path}")
+        self.model.load_state_dict({key.removeprefix("module."): value for key, value in state.items()})
+        self.loaded_checkpoint = True
+
+    def detection_loss(self, images, targets):
+        """Return torchvision's training loss dictionary."""
+        self.model.train()
+        return self.model(images, targets)
+
+    @torch.no_grad()
+    def forward(self, img_tensor: torch.Tensor, score_threshold: float = 0.4):
+        if img_tensor.ndim != 4 or img_tensor.shape[0] != 1 or img_tensor.shape[1] != 3:
+            raise ValueError("detector input must have shape (1,3,H,W)")
+        device = img_tensor.device
+        _, _, height, width = img_tensor.shape
+        image = ((img_tensor[0] + 1.0) / 2.0).clamp(0.0, 1.0)
+        self.model.eval()
+        prediction = self.model([image])[0]
+        labels = prediction["labels"]
+        keep = (labels >= 1) & (labels < self.num_classes) & (prediction["scores"] >= score_threshold)
+        boxes = prediction["boxes"][keep].to(device)
+        scores = prediction["scores"][keep].to(device)
+        landmarks = torch.zeros((boxes.shape[0], 5, 2), device=device, dtype=boxes.dtype)
+        if boxes.numel() == 0:
+            return _empty_detection(device)
+        boxes[:, 0::2].clamp_(0.0, float(width))
+        boxes[:, 1::2].clamp_(0.0, float(height))
+        boxes, scores, kept = soft_nms_pytorch(
+            boxes, scores, score_threshold=score_threshold, return_indices=True
+        )
+        return boxes, scores, landmarks[kept]
+
+
 class FasterRCNNFaceDetector(nn.Module):
     """Backward-compatible facade for the configured face detector.
 
-    Generic COCO Faster R-CNN is not used as a face detector. A face-trained
-    Faster R-CNN can be added as a separate backend, but silently interpreting
-    the COCO ``person`` class as a face would be incorrect.
+    Uses the trained AQUA ``face_detector.pt`` artifact when present. If no
+    trained artifact is available, it falls back to the external YuNet/MTCNN
+    facade rather than treating generic COCO ``person`` detections as faces.
     """
 
     def __init__(self, weights_dir: str = "./weights", backend: str = "auto", enable_tta: bool = False, **kwargs):
         super().__init__()
+        detector_checkpoint = kwargs.get("detector_checkpoint") or os.path.join(weights_dir, "face_detector.pt")
+        self.trained_detector = None
+        if detector_checkpoint and os.path.isfile(detector_checkpoint):
+            self.trained_detector = TorchvisionFaceDetector(checkpoint_path=detector_checkpoint)
         self.sota_refiner = SOTAFaceDetector(
             weights_dir=weights_dir,
             backend=backend,
             enable_tta=enable_tta,
         )
 
+    def load_trained_checkpoint(self, checkpoint_path: str, device: Optional[torch.device] = None) -> None:
+        """Replace the external fallback with a trained AQUA detector."""
+        self.trained_detector = TorchvisionFaceDetector(checkpoint_path=checkpoint_path)
+        if device is not None:
+            self.trained_detector.to(device)
+
     def forward(self, img_tensor: torch.Tensor, score_threshold: float = 0.4):
+        if self.trained_detector is not None:
+            return self.trained_detector.to(img_tensor.device)(img_tensor, score_threshold=score_threshold)
         return self.sota_refiner(img_tensor, score_threshold=score_threshold)
 
 

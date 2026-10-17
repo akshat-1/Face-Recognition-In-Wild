@@ -6,7 +6,7 @@ the implemented architecture and checkpoint contracts.
 ## Current executable design
 
 ```text
-image -> YuNet/MTCNN detector -> indexed Soft-NMS
+image -> trained AQUA detector (or YuNet/MTCNN fallback) -> indexed Soft-NMS
        -> five-point alignment -> optional checkpointed preprocessing
        -> IResNet-100 or generic ViT embedding
        -> enrolled dictionary/open-set classifier
@@ -15,11 +15,13 @@ image -> YuNet/MTCNN detector -> indexed Soft-NMS
 
 Training is task-separated:
 
-1. Phase 1 trains an identity backbone on real labelled face crops with
+1. Phase 0 trains a class-agnostic Faster R-CNN from AQUA `bb_label` YOLO
+   boxes and saves `face_detector.pt`.
+2. Phase 1 trains an identity backbone on real labelled face crops with
    CurricularFace and an explicit BroadFace-style detached memory queue.
-2. Phase 2 is optional and trains the 40 CelebA attribute logits only on real
+3. Phase 2 is optional and trains the 40 CelebA attribute logits only on real
    CelebA annotations.
-3. Phase 3 is optional and performs globally indexed unlabeled graph
+4. Phase 3 is optional and performs globally indexed unlabeled graph
    adaptation, then saves the adapted backbone.
 
 ## Non-negotiable safety rules
@@ -36,6 +38,7 @@ Training is task-separated:
 
 ```text
 train.py
+    train_phase0_face_detector
     train_phase1_backbone_curricular
     train_phase2_anet_attributes
     train_phase3_semi_supervised_gcn
@@ -67,6 +70,7 @@ eval_widerface.py
 
 ```text
 checkpoints/recognition_backbone.pt
+checkpoints/face_detector.pt
 checkpoints/latest_backbone.pt
 checkpoints/phase2_anet_attributes.pt
 checkpoints/phase3_semi_gcn_predictor.pt

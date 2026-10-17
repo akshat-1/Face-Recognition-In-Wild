@@ -4,6 +4,7 @@ from typing import Tuple
 @dataclass
 class DatasetConfig:
     train_data_dir: str = "" # Identity-labelled, face-crop dataset
+    bb_data_dir: str = "" # YOLO/Darknet face detection dataset (AQUA bb_label)
     unlabeled_data_dir: str = "" # Optional unlabeled face-crop dataset
     val_data_dir: str = ""
     celeba_dir: str = ""
@@ -51,6 +52,10 @@ class TrainConfig:
     log_interval: int = 50
     device: str = "cuda"
     seed: int = 42
+    detector_epochs: int = 10
+    detector_batch_size: int = 2
+    detector_learning_rate: float = 0.005
+    detector_pretrained_backbone: bool = True
 
 @dataclass
 class SystemConfig:
