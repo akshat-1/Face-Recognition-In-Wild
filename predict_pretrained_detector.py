@@ -42,7 +42,7 @@ def generate_predictions_grid(output_dir: str, grid_filename: str = "all_predict
     
     # Top banner title
     draw.rectangle([0, 0, grid_w, banner_h], fill=(20, 40, 70))
-    title_text = f"Pretrained MTCNN + OpenCV YuNet ONNX Face Detection Grid ({num_images} Scenes)"
+    title_text = f"MTCNN + OpenCV YuNet Face Detection Grid ({num_images} Scenes)"
     draw.text((padding + 10, 22), title_text, fill=(255, 255, 255))
     
     for idx, img_path in enumerate(pred_files):
@@ -72,10 +72,10 @@ def generate_predictions_grid(output_dir: str, grid_filename: str = "all_predict
 
 def run_pretrained_detector_inference(image_dir: str, weights_dir: str = "./weights", output_dir: str = "./results/pretrained"):
     """
-    Runs inference using ONLY the pretrained Faster-RCNN (ResNet-50 FPN) + MTCNN + YuNet detector.
+    Runs inference using the configured pretrained face detector backends.
     """
     print(f"========================================================================")
-    print(f"--- Pretrained Faster-RCNN (ResNet-50 FPN) + SOTA Face Detector ---")
+    print(f"--- Pretrained YuNet/MTCNN Face Detector ---")
     print(f"Input Directory: {image_dir} | Output Directory: {output_dir}")
     print(f"========================================================================\n")
     

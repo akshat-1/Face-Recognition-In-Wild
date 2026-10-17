@@ -80,7 +80,7 @@ def run_inference_demo():
     print("\n=== Step 3: Running End-to-End Inference Engine Pipeline ===")
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     
-    pipeline = OccuPoseBroadDictPipeline(num_enrolled_classes=50, feature_dim=512).to(device)
+    pipeline = OccuPoseBroadDictPipeline(num_enrolled_classes=0, feature_dim=512).to(device)
     
     # Prepare dummy input image (224x224)
     dummy_wild_image = torch.randn(1, 3, 224, 224, device=device)

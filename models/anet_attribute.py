@@ -105,13 +105,10 @@ class ANetAttributeParser(nn.Module):
             if hasattr(raw_backbone, 'conv1') and hasattr(self, 'global_conv1'):
                 w = raw_backbone.conv1.weight.data
                 self.global_conv1[0].weight.data.copy_(w[:32, :3, :, :])
-            if hasattr(raw_backbone, 'layer1') and hasattr(self, 'global_conv2'):
-                w = raw_backbone.layer1[0].conv1.weight.data
-                self.global_conv2[0].weight.data.copy_(w[:64, :32, :, :])
-            if hasattr(raw_backbone, 'layer2') and hasattr(self, 'global_conv3'):
-                w = raw_backbone.layer2[0].conv1.weight.data
-                self.global_conv3[0].weight.data.copy_(w[:128, :64, :, :])
-            print("✓ [ANet Backbone Transfer] Successfully initialized ANet global path with Phase 1 identity backbone weights.")
+            # Later IResNet blocks have incompatible channel counts with this
+            # small ANet. Only copy the shape-compatible stem; silently slicing
+            # convolution kernels produces invalid feature semantics.
+            print("✓ [ANet Backbone Transfer] Copied the shape-compatible identity stem.")
         except Exception as e:
             print(f"Note: ANet backbone weight transfer skipped ({e}), training ANet from default initialization.")
 
@@ -132,9 +129,25 @@ class ANetAttributeParser(nn.Module):
         g2 = self.global_conv2(g1)
         g3 = self.global_conv3(g2) # (B, 128, 7, 7)
         
-        # 2. Forward through Local Landmark Attention Path (Eye & Mouth/Mask local zones)
-        upper_face = x[:, :, :H//2, :] # Upper face region (Eyes, Glasses, Hat)
-        resized_local = F.interpolate(upper_face, size=(56, 56), mode='bilinear', align_corners=False)
+        # 2. Forward through a landmark-guided local patch. If landmarks are
+        # unavailable, use a deterministic upper-face fallback and expose that
+        # quality limitation through the pipeline's ``aligned`` flag.
+        if landmarks is not None and landmarks.ndim == 3 and landmarks.shape[1:] == (5, 2):
+            local_patches = []
+            for sample, points in zip(x, landmarks):
+                if torch.isfinite(points).all() and points.abs().sum() > 0:
+                    x_min = int(torch.floor(points[:, 0].min()).clamp(0, W - 1).item())
+                    x_max = int(torch.ceil(points[:, 0].max()).clamp(x_min + 1, W).item())
+                    y_min = int(torch.floor(points[:, 1].min()).clamp(0, H - 1).item())
+                    y_max = int(torch.ceil(points[:, 1].max()).clamp(y_min + 1, H).item())
+                    local = sample[:, y_min:y_max, x_min:x_max].unsqueeze(0)
+                else:
+                    local = sample[:, :H // 2, :].unsqueeze(0)
+                local_patches.append(F.interpolate(local, size=(56, 56), mode='bilinear', align_corners=False)[0])
+            resized_local = torch.stack(local_patches, dim=0)
+        else:
+            upper_face = x[:, :, :H // 2, :]
+            resized_local = F.interpolate(upper_face, size=(56, 56), mode='bilinear', align_corners=False)
         l_feat = self.local_patch_extractor(resized_local) # (B, 64, 7, 7)
         
         # 3. Inter-Layer Dual-Path Concatenation & Fusion

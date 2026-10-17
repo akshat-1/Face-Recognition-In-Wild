@@ -21,9 +21,9 @@ class GraphConvBlock(nn.Module):
 
 class GCNLinkPredictor(nn.Module):
     """
-    Official GCN Link Predictor for Unlabeled Wild Face Clustering (RoyChowdhury et al., ECCV 2020; Wang et al., CVPR 2020).
+    Reference GCN link predictor for optional unlabeled face clustering.
     
-    Unsimplified Multi-Stage Graph Convolution Network with Residual Connections and 4-Way Edge Feature Modulation:
+    Multi-Stage Graph Convolution Network with Residual Connections and 4-Way Edge Feature Modulation:
     1. 3-Layer Graph Convolution Backbone (H_0 -> H_1 -> H_2 -> H_3 with residual skip connections).
     2. 4-Way Edge Interaction Module: [h_i, h_j, |h_i - h_j|, h_i * h_j] (dim = 4 * hidden_dim).
     3. Pairwise Edge Probability Prediction Head P(e_ij = 1).
@@ -57,7 +57,7 @@ class GCNLinkPredictor(nn.Module):
         Builds normalized KNN adjacency matrix A_tilde from embedding cosine similarities with self-loops.
         """
         norm_embeds = F.normalize(embeddings, p=2, dim=1)
-        sim_matrix = torch.matmul(norm_embeds, norm_embeds.T) # (B, B)
+        sim_matrix = torch.matmul(norm_embeds, norm_embeds.T).clamp_min(0.0) # (B, B)
         
         B = embeddings.size(0)
         k = min(self.k_neighbors, B - 1)
@@ -68,9 +68,11 @@ class GCNLinkPredictor(nn.Module):
         
         adj = torch.zeros_like(sim_matrix)
         adj.scatter_(1, topk_indices, topk_vals)
-        
-        # Self-loops (A_tilde = A + I)
-        adj = adj + torch.eye(B, device=embeddings.device)
+        # A nearest-neighbour graph is made undirected before normalization.
+        adj = torch.maximum(adj, adj.T)
+
+        # Self-loops (A_tilde = A + I), added exactly once.
+        adj = adj + torch.eye(B, device=embeddings.device, dtype=adj.dtype)
         
         # Normalized Laplacian: D^{-1/2} A D^{-1/2}
         deg = torch.sum(adj, dim=1)
@@ -93,7 +95,10 @@ class GCNLinkPredictor(nn.Module):
         B = embeddings.size(0)
         if B <= 1:
             edge_probs = torch.ones((B, B), device=embeddings.device)
-            return (torch.tensor(0.0, device=embeddings.device), edge_probs) if labels is not None else edge_probs
+            if labels is not None:
+                zero = sum((parameter.sum() * 0.0) for parameter in self.parameters())
+                return zero, edge_probs
+            return edge_probs
 
         adj = self.build_knn_adjacency(embeddings)
         
@@ -151,10 +156,11 @@ class GCNLinkPredictor(nn.Module):
             
             pairs = torch.cat([h_i, h_j, diff, prod], dim=-1).reshape(B * B, -1) # (B*B, 4*hidden_dim)
             
-            edge_probs = self.edge_mlp(pairs).reshape(B, B)
-            
+            edge_probs = torch.sigmoid(self.edge_mlp(pairs).reshape(B, B))
+
             # Connected component graph clustering
-            connected = (edge_probs >= confidence_threshold) & (edge_probs > 0)
+            connected = (edge_probs >= confidence_threshold)
+            connected = connected | connected.T
             
             # Breadth-First Search (BFS) connected components
             pseudo_labels = torch.full((B,), -1, dtype=torch.long, device=embeddings.device)
@@ -181,3 +187,55 @@ class GCNLinkPredictor(nn.Module):
                         
             active_mask = pseudo_labels >= start_class_idx
             return pseudo_labels, active_mask
+
+    @torch.no_grad()
+    def generate_global_pseudo_labels(self, embeddings: torch.Tensor,
+                                      confidence_threshold: float = 0.75,
+                                      start_class_idx: int = 1000,
+                                      block_size: int = 1024):
+        """Cluster a complete unlabeled stream with globally unique IDs.
+
+        The learned GCN edge head is used for small graphs. For larger graphs,
+        a blockwise nonnegative cosine k-NN graph avoids materializing an
+        ``N x N x hidden`` pair tensor. Both branches use one global union-find
+        pass, so cluster identifiers cannot collide across minibatches.
+        """
+        if embeddings.ndim != 2:
+            raise ValueError("embeddings must have shape (N,D)")
+        n = embeddings.shape[0]
+        if n <= 512:
+            return self.generate_pseudo_labels(embeddings, confidence_threshold, start_class_idx)
+        normalized = F.normalize(embeddings, p=2, dim=1)
+        parent = list(range(n))
+
+        def find(node):
+            while parent[node] != node:
+                parent[node] = parent[parent[node]]
+                node = parent[node]
+            return node
+
+        def union(first, second):
+            root_first, root_second = find(first), find(second)
+            if root_first != root_second:
+                parent[root_second] = root_first
+
+        k = min(self.k_neighbors, max(1, n - 1))
+        for start in range(0, n, block_size):
+            stop = min(n, start + block_size)
+            similarities = normalized[start:stop] @ normalized.T
+            values, indices = torch.topk(similarities, k=min(k + 1, n), dim=1)
+            for row in range(stop - start):
+                for value, column in zip(values[row].tolist(), indices[row].tolist()):
+                    if column != start + row and value >= confidence_threshold:
+                        union(start + row, int(column))
+
+        components = {}
+        for index in range(n):
+            components.setdefault(find(index), []).append(index)
+        pseudo_labels = torch.full((n,), -1, dtype=torch.long, device=embeddings.device)
+        cluster_id = start_class_idx
+        for members in components.values():
+            if len(members) >= 2:
+                pseudo_labels[members] = cluster_id
+                cluster_id += 1
+        return pseudo_labels, pseudo_labels >= start_class_idx

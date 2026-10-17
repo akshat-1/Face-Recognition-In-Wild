@@ -118,7 +118,11 @@ class OccludedFaceInferenceEngine:
         print(f"Device: {self.device} | Weights: {weights_dir}")
         print(f"========================================================================\n")
         
-        self.pipeline = OccuPoseBroadDictPipeline(num_enrolled_classes=100, feature_dim=512).to(self.device)
+        self.pipeline = OccuPoseBroadDictPipeline(
+            num_enrolled_classes=0,
+            feature_dim=512,
+            detector_weights_dir=weights_dir,
+        ).to(self.device)
         self.pipeline.load_pretrained_weights(checkpoint_dir=weights_dir, device=self.device)
         
         if os.path.exists(gallery_dir):
@@ -180,12 +184,12 @@ class OccludedFaceInferenceEngine:
                 
                 # Crop face patch from 224 tensor for ANet spatial mask breakdown
                 crop_patch = img_tensor[:, :, max(0, y1_224):min(224, y2_224), max(0, x1_224):min(224, x2_224)]
-                if crop_patch.shape[2] > 5 and crop_patch.shape[3] > 5:
+                if crop_patch.shape[2] > 5 and crop_patch.shape[3] > 5 and self.pipeline.attribute_parser is not None:
                     resized_crop = F.interpolate(crop_patch, size=(112, 112), mode='bilinear', align_corners=False)
                     attr_logits, occ_mask, _ = self.pipeline.attribute_parser(resized_crop)
                     severity_pct, zone_desc, mask_grid = analyze_occlusion_mask(occ_mask)
                 else:
-                    severity_pct, zone_desc = 0.0, "Clean"
+                    severity_pct, zone_desc = 0.0, "Not evaluated"
                     
                 face_summary = {
                     'box_224': [x1_224, y1_224, x2_224, y2_224],

@@ -14,6 +14,33 @@ except Exception:
 
 VALID_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
 
+
+class DatasetConfigurationError(ValueError):
+    """Raised when a production dataset cannot provide valid samples."""
+
+
+def _require_dataset_root(root_dir: str, name: str) -> str:
+    if not root_dir:
+        raise FileNotFoundError(
+            f"{name} is not configured. Pass an explicit dataset directory; "
+            "synthetic fixtures are disabled in production."
+        )
+    if not os.path.isdir(root_dir):
+        raise FileNotFoundError(f"{name} does not exist or is not a directory: {root_dir}")
+    return root_dir
+
+
+def canonical_identity_name(name: str) -> str:
+    """Normalize dataset condition prefixes without making conditions identities."""
+    normalized = name.strip()
+    normalized = re.sub(r'^(ROF_|WILD_|MASK_)', '', normalized, flags=re.IGNORECASE)
+    normalized = re.sub(
+        r'(?:_wearing_(?:mask|sunglasses|hat)|_(?:mask|sunglasses|hat)|'
+        r'_(?:with_mask|masked))$',
+        '', normalized, flags=re.IGNORECASE,
+    )
+    return normalized or name.strip()
+
 class PurePyTorchImageTransform:
     """
     Fallback Image Transform using pure PyTorch & PIL.
@@ -24,15 +51,16 @@ class PurePyTorchImageTransform:
         self.is_train = is_train
 
     def __call__(self, img: Image.Image) -> torch.Tensor:
-        if img.size != self.image_size:
-            img = img.resize(self.image_size, Image.BILINEAR)
+        height, width = self.image_size
+        if img.size != (width, height):
+            img = img.resize((width, height), Image.BILINEAR)
             
         if self.is_train and torch.rand(1).item() > 0.5:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
             
         img_bytes = bytearray(img.tobytes())
         tensor = torch.frombuffer(img_bytes, dtype=torch.uint8)
-        tensor = tensor.view(self.image_size[1], self.image_size[0], 3).permute(2, 0, 1).float() / 255.0
+        tensor = tensor.view(height, width, 3).permute(2, 0, 1).float() / 255.0
         tensor = (tensor - 0.5) / 0.5
         return tensor
 
@@ -81,10 +109,11 @@ class UnlabeledWildDataset(data.Dataset):
     Dynamic Dataset Loader for 'unlabeled/' directory.
     Supports dynamic rescanning of constantly growing datasets uploaded in parallel.
     """
-    def __init__(self, root_dir: str = None, unlabeled_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
+    def __init__(self, root_dir: str = None, unlabeled_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112), allow_synthetic: bool = False):
         super(UnlabeledWildDataset, self).__init__()
         self.unlabeled_dir = root_dir if root_dir is not None else unlabeled_dir
         self.image_size = image_size
+        self.allow_synthetic = allow_synthetic
         self.transform = transform if transform is not None else get_default_transform(image_size, is_train)
         self.samples = []
         self.rescan()
@@ -98,14 +127,17 @@ class UnlabeledWildDataset(data.Dataset):
         self.samples = []
         if self.unlabeled_dir and os.path.exists(self.unlabeled_dir):
             for root, _, files in os.walk(self.unlabeled_dir):
-                for f in files:
+                for f in sorted(files):
                     if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                         self.samples.append(os.path.join(root, f))
                         
-        if len(self.samples) == 0:
+        if len(self.samples) == 0 and self.allow_synthetic:
             for _ in range(500):
                 self.samples.append("dummy_unlabeled")
-                
+        elif len(self.samples) == 0:
+            raise DatasetConfigurationError(
+                f"No valid images were found in unlabeled dataset: {self.unlabeled_dir}"
+            )
         if len(self.samples) != prev_count:
             print(f"[Dynamic Unlabeled Rescan] Indexed {len(self.samples)} images (New: +{len(self.samples) - prev_count})")
         return len(self.samples)
@@ -114,15 +146,17 @@ class UnlabeledWildDataset(data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path = self.samples[idx % len(self.samples)]
+        if idx < 0 or idx >= len(self.samples):
+            raise IndexError(f"Unlabeled dataset index out of range: {idx}")
+        path = self.samples[idx]
         if path == "dummy_unlabeled":
             img_tensor = torch.randn(3, *self.image_size)
         else:
             try:
                 img = Image.open(path).convert('RGB')
                 img_tensor = self.transform(img)
-            except Exception:
-                img_tensor = torch.zeros(3, *self.image_size)
+            except Exception as exc:
+                raise RuntimeError(f"Could not decode unlabeled image {path}: {exc}") from exc
                 
         return img_tensor, -1, False
 
@@ -132,10 +166,11 @@ class NameLabeledFaceDataset(data.Dataset):
     Dynamic Dataset Loader for 'name_label/' directory.
     Supports dynamic rescanning of constantly growing labeled datasets uploaded in parallel.
     """
-    def __init__(self, root_dir: str = None, name_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
+    def __init__(self, root_dir: str = None, name_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112), allow_synthetic: bool = False):
         super(NameLabeledFaceDataset, self).__init__()
         self.name_label_dir = root_dir if root_dir is not None else name_label_dir
         self.image_size = image_size
+        self.allow_synthetic = allow_synthetic
         self.transform = transform if transform is not None else get_default_transform(image_size, is_train)
         self.samples = []
         self.class_to_idx = {}
@@ -147,13 +182,22 @@ class NameLabeledFaceDataset(data.Dataset):
         """
         prev_count = len(self.samples)
         self.samples = []
-        
+        self.class_to_idx = {}
         if self.name_label_dir and os.path.exists(self.name_label_dir):
             self._parse_name_label_directory()
-        else:
+        elif self.allow_synthetic:
             self.class_to_idx = {f"Subject_{i}": i for i in range(50)}
             for i in range(500):
                 self.samples.append(("dummy_labeled", i % 50))
+        else:
+            raise FileNotFoundError(
+                f"Labeled dataset does not exist or is not configured: {self.name_label_dir}"
+            )
+
+        if not self.samples:
+            raise DatasetConfigurationError(
+                f"No valid labelled images were found in: {self.name_label_dir}"
+            )
                 
         if len(self.samples) != prev_count:
             print(f"[Dynamic NameLabeled Rescan] Indexed {len(self.samples)} images across {len(self.class_to_idx)} identities (New: +{len(self.samples) - prev_count})")
@@ -177,9 +221,10 @@ class NameLabeledFaceDataset(data.Dataset):
 
     def _parse_folder_identities(self, base_dir: str, prefix: str = ""):
         for root, dirs, files in os.walk(base_dir):
-            image_files = [f for f in files if f.lower().endswith(VALID_IMAGE_EXTENSIONS)]
+            dirs.sort()
+            image_files = sorted(f for f in files if f.lower().endswith(VALID_IMAGE_EXTENSIONS))
             if len(image_files) > 0:
-                folder_name = prefix + os.path.basename(root)
+                folder_name = canonical_identity_name(prefix + os.path.basename(root))
                 if folder_name not in self.class_to_idx:
                     self.class_to_idx[folder_name] = len(self.class_to_idx)
                 label_idx = self.class_to_idx[folder_name]
@@ -194,7 +239,7 @@ class NameLabeledFaceDataset(data.Dataset):
                 if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                     match = pattern.match(f)
                     raw_name = match.group(1) if match else "unknown_mask"
-                    identity_name = "MASK_" + raw_name
+                    identity_name = canonical_identity_name("MASK_" + raw_name)
                     
                     if identity_name not in self.class_to_idx:
                         self.class_to_idx[identity_name] = len(self.class_to_idx)
@@ -205,15 +250,17 @@ class NameLabeledFaceDataset(data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path, label_idx = self.samples[idx % len(self.samples)]
+        if idx < 0 or idx >= len(self.samples):
+            raise IndexError(f"Labeled dataset index out of range: {idx}")
+        path, label_idx = self.samples[idx]
         if path == "dummy_labeled":
             img_tensor = torch.randn(3, *self.image_size)
         else:
             try:
                 img = Image.open(path).convert('RGB')
                 img_tensor = self.transform(img)
-            except Exception:
-                img_tensor = torch.zeros(3, *self.image_size)
+            except Exception as exc:
+                raise RuntimeError(f"Could not decode labelled image {path}: {exc}") from exc
                 
         return img_tensor, label_idx, True
 
@@ -223,10 +270,11 @@ class BoundingBoxFaceDataset(data.Dataset):
     Dynamic Dataset Loader for 'bb_label/' directory.
     Supports dynamic rescanning of bounding box datasets uploaded in parallel.
     """
-    def __init__(self, root_dir: str = None, bb_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112)):
+    def __init__(self, root_dir: str = None, bb_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112), allow_synthetic: bool = False):
         super(BoundingBoxFaceDataset, self).__init__()
         self.bb_label_dir = root_dir if root_dir is not None else bb_label_dir
         self.image_size = image_size
+        self.allow_synthetic = allow_synthetic
         self.transform = transform if transform is not None else get_default_transform(image_size, is_train)
         self.samples = []
         self.rescan()
@@ -239,9 +287,18 @@ class BoundingBoxFaceDataset(data.Dataset):
         self.samples = []
         if self.bb_label_dir and os.path.exists(self.bb_label_dir):
             self._parse_bb_label_directory()
-        else:
+        elif self.allow_synthetic:
             for i in range(200):
                 self.samples.append(("dummy_bb", None, 0))
+        else:
+            raise FileNotFoundError(
+                f"Bounding-box dataset does not exist or is not configured: {self.bb_label_dir}"
+            )
+
+        if not self.samples:
+            raise DatasetConfigurationError(
+                f"No valid bounding-box images were found in: {self.bb_label_dir}"
+            )
                 
         if len(self.samples) != prev_count:
             print(f"[Dynamic BoundingBox Rescan] Indexed {len(self.samples)} bounding box images (New: +{len(self.samples) - prev_count})")
@@ -259,7 +316,7 @@ class BoundingBoxFaceDataset(data.Dataset):
         for sdir in search_dirs:
             if sdir and os.path.exists(sdir):
                 for root, _, files in os.walk(sdir):
-                    for f in files:
+                    for f in sorted(files):
                         if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                             img_path = os.path.join(root, f)
                             base_name = os.path.splitext(f)[0]
@@ -276,7 +333,9 @@ class BoundingBoxFaceDataset(data.Dataset):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path, bboxes, class_id = self.samples[idx % len(self.samples)]
+        if idx < 0 or idx >= len(self.samples):
+            raise IndexError(f"Bounding-box dataset index out of range: {idx}")
+        path, bboxes, class_id = self.samples[idx]
         if path == "dummy_bb":
             img_tensor = torch.randn(3, *self.image_size)
             return img_tensor, class_id, True
@@ -296,8 +355,8 @@ class BoundingBoxFaceDataset(data.Dataset):
                     img = img.crop((x1, y1, x2, y2))
                     
             img_tensor = self.transform(img)
-        except Exception:
-            img_tensor = torch.zeros(3, *self.image_size)
+        except Exception as exc:
+            raise RuntimeError(f"Could not decode bounding-box image {path}: {exc}") from exc
             
         return img_tensor, class_id, True
 
@@ -306,58 +365,43 @@ class UnifiedWildFaceDataset(data.Dataset):
     """
     Unified Dynamic Dataset Loader combining all datastreams with automatic epoch-wise rescanning.
     """
-    def __init__(self, root_dir: str = None, meta_file: str = None, is_labeled: bool = True, transform=None, is_train: bool = True, image_size=(112, 112)):
+    def __init__(self, root_dir: str = None, meta_file: str = None, is_labeled: bool = True, transform=None, is_train: bool = True, image_size=(112, 112), allow_synthetic: bool = False):
         super(UnifiedWildFaceDataset, self).__init__()
-        self.root_dir = root_dir
+        self.root_dir = _require_dataset_root(root_dir, "unified face dataset")
         self.is_labeled = is_labeled
         self.is_train = is_train
-        
-        self.unlabeled_ds = UnlabeledWildDataset(
-            unlabeled_dir=os.path.join(root_dir, "unlabeled") if root_dir else None,
-            transform=transform, is_train=is_train, image_size=image_size
-        )
-        
-        self.name_labeled_ds = NameLabeledFaceDataset(
-            name_label_dir=os.path.join(root_dir, "name_label") if root_dir else None,
-            transform=transform, is_train=is_train, image_size=image_size
-        )
-        
-        self.bb_labeled_ds = BoundingBoxFaceDataset(
-            bb_label_dir=os.path.join(root_dir, "bb_label") if root_dir else None,
-            transform=transform, is_train=is_train, image_size=image_size
-        )
-        
-        self.class_to_idx = self.name_labeled_ds.class_to_idx
+        if is_labeled:
+            labelled_root = os.path.join(root_dir, "name_label")
+            labelled_root = labelled_root if os.path.isdir(labelled_root) else root_dir
+            self.primary_ds = NameLabeledFaceDataset(
+                name_label_dir=labelled_root,
+                transform=transform, is_train=is_train, image_size=image_size,
+                allow_synthetic=allow_synthetic,
+            )
+            self.class_to_idx = self.primary_ds.class_to_idx
+        else:
+            unlabeled_root = os.path.join(root_dir, "unlabeled")
+            unlabeled_root = unlabeled_root if os.path.isdir(unlabeled_root) else root_dir
+            self.primary_ds = UnlabeledWildDataset(
+                unlabeled_dir=unlabeled_root,
+                transform=transform, is_train=is_train, image_size=image_size,
+                allow_synthetic=allow_synthetic,
+            )
+            self.class_to_idx = {}
 
     def rescan(self):
         """
         Rescans all sub-datasets to pick up newly arrived parallel file uploads.
         """
-        n_unlabeled = self.unlabeled_ds.rescan()
-        n_name = self.name_labeled_ds.rescan()
-        n_bb = self.bb_labeled_ds.rescan()
-        self.class_to_idx = self.name_labeled_ds.class_to_idx
-        return n_unlabeled + n_name + n_bb
+        count = self.primary_ds.rescan()
+        self.class_to_idx = getattr(self.primary_ds, "class_to_idx", {})
+        return count
 
     def __len__(self):
-        return len(self.unlabeled_ds) + len(self.name_labeled_ds) + len(self.bb_labeled_ds)
+        return len(self.primary_ds)
 
     def __getitem__(self, idx):
-        if self.root_dir is None:
-            if self.is_labeled:
-                return self.name_labeled_ds[idx % len(self.name_labeled_ds)]
-            else:
-                return self.unlabeled_ds[idx % len(self.unlabeled_ds)]
-            
-        len_unlabeled = len(self.unlabeled_ds) if self.root_dir else 0
-        len_name = len(self.name_labeled_ds)
-        
-        if idx < len_unlabeled:
-            return self.unlabeled_ds[idx]
-        elif idx < len_unlabeled + len_name:
-            return self.name_labeled_ds[idx - len_unlabeled]
-        else:
-            return self.bb_labeled_ds[idx - len_unlabeled - len_name]
+        return self.primary_ds[idx]
 
 
 RobustUniversalFaceDataset = UnifiedWildFaceDataset
@@ -365,185 +409,79 @@ WildFaceDataset = NameLabeledFaceDataset
 UnlabeledFaceDataset = UnlabeledWildDataset
 
 class Phase2UnifiedAttributeDataset(data.Dataset):
+    """CelebA-only attribute dataset with real labels and no fake wild labels.
+
+    Attribute supervision is a separate task from identity recognition. Wild
+    images without annotation are intentionally excluded instead of receiving
+    random targets. Occlusion masks are not fabricated here; a future mask
+    dataset can be added as a separate task with its own annotation contract.
     """
-    Unified Phase 2 Dataset combining CelebA, Labeled (name_label), Unlabeled (wild/FMD/COVID), and Bounding Box datasets.
-    Handles missing/incomplete image file exceptions gracefully during parallel uploads.
-    Implements self-supervised synthetic occlusion augmentation to generate ground-truth 7x7 spatial occlusion maps.
-    """
-    def __init__(self, root_dir: str = None, celeba_dir: str = None, attr_file: str = None, is_train: bool = True, image_size=(112, 112)):
-        super(Phase2UnifiedAttributeDataset, self).__init__()
-        self.root_dir = root_dir if root_dir else celeba_dir
-        self.is_train = is_train
+
+    def __init__(self, root_dir: str = None, celeba_dir: str = None, attr_file: str = None,
+                 is_train: bool = True, image_size=(112, 112)):
+        super().__init__()
+        self.root_dir = _require_dataset_root(root_dir or celeba_dir, "CelebA attribute dataset")
         self.image_size = image_size
         self.transform = get_default_transform(image_size, is_train)
-        
         self.samples = []
-        
-        # 1. Locate CelebA attribute annotation file (.csv or .txt)
-        if self.root_dir:
-            parent_dir = os.path.dirname(self.root_dir.rstrip('/'))
-            if attr_file is None or not os.path.exists(attr_file):
-                possible_files = [
-                    os.path.join(os.getcwd(), "list_attr_celeba.csv"),
-                    "list_attr_celeba.csv",
-                    os.path.join(self.root_dir, "list_attr_celeba.csv"),
-                    os.path.join(self.root_dir, "celeba", "list_attr_celeba.csv"),
-                    os.path.join(parent_dir, "list_attr_celeba.csv"),
-                    os.path.join(parent_dir, "celeba", "list_attr_celeba.csv"),
-                    os.path.join(self.root_dir, "list_attr_celeba.txt"),
-                    os.path.join(self.root_dir, "attr_celeba.txt"),
-                    os.path.join(self.root_dir, "Anno", "list_attr_celeba.txt"),
-                    os.path.join(self.root_dir, "annotations", "list_attr_celeba.txt"),
-                ]
-                for pf in possible_files:
-                    if os.path.exists(pf):
-                        attr_file = pf
-                        break
-                        
-            if attr_file and os.path.exists(attr_file):
-                celeba_img_roots = [
-                    self.root_dir,
-                    os.path.join(self.root_dir, "img_align_celeba"),
-                    os.path.join(self.root_dir, "img_align_celeba", "img_align_celeba"),
-                    os.path.join(parent_dir, "unlabeled", "img_align_celeba"),
-                    os.path.join(parent_dir, "unlabeled", "img_align_celeba", "img_align_celeba"),
-                ]
-                
-                raw_entries = []
-                if attr_file.endswith('.csv'):
-                    import csv
-                    with open(attr_file, 'r', encoding='utf-8', errors='ignore') as f:
-                        reader = csv.reader(f)
-                        header = next(reader)
-                        for row in reader:
-                            if len(row) >= 41:
-                                img_name = row[0]
-                                attrs = [1.0 if int(x) == 1 else 0.0 for x in row[1:]]
-                                raw_entries.append((img_name, torch.tensor(attrs, dtype=torch.float32)))
-                else:
-                    with open(attr_file, 'r', encoding='utf-8', errors='ignore') as f:
-                        lines = f.readlines()[2:]
-                        for line in lines:
-                            parts = line.strip().split()
-                            if len(parts) >= 41:
-                                img_name = parts[0]
-                                attrs = [1.0 if int(x) == 1 else 0.0 for x in parts[1:]]
-                                raw_entries.append((img_name, torch.tensor(attrs, dtype=torch.float32)))
-                                
-                for img_name, attrs in raw_entries:
-                    found_path = None
-                    for c_root in celeba_img_roots:
-                        cand = os.path.join(c_root, img_name)
-                        if os.path.exists(cand):
-                            found_path = cand
-                            break
-                    if found_path:
-                        self.samples.append((found_path, attrs))
-                    elif self.root_dir and os.path.exists(os.path.join(self.root_dir, img_name)):
-                        self.samples.append((os.path.join(self.root_dir, img_name), attrs))
-        
-        # 2. Index all wild datasets (unlabeled, name_label, bb_label)
-        search_dirs = []
-        if self.root_dir and os.path.exists(self.root_dir):
-            search_dirs.append(self.root_dir)
-        if self.root_dir:
-            parent_dir = os.path.dirname(self.root_dir.rstrip('/'))
-            for sub in ["unlabeled", "name_label", "bb_label"]:
-                cand = os.path.join(parent_dir, sub)
-                if os.path.exists(cand) and cand not in search_dirs:
-                    search_dirs.append(cand)
-                    
-        wild_images = []
-        for sdir in search_dirs:
-            if sdir and os.path.exists(sdir):
-                for root, _, files in os.walk(sdir):
-                    if "img_align_celeba" in root:
+
+        parent_dir = os.path.dirname(self.root_dir.rstrip('/'))
+        if attr_file is None:
+            candidates = [
+                os.path.join(self.root_dir, "list_attr_celeba.csv"),
+                os.path.join(self.root_dir, "list_attr_celeba.txt"),
+                os.path.join(self.root_dir, "Anno", "list_attr_celeba.txt"),
+                os.path.join(parent_dir, "list_attr_celeba.csv"),
+                os.path.join(parent_dir, "list_attr_celeba.txt"),
+            ]
+            attr_file = next((path for path in candidates if os.path.isfile(path)), None)
+        if not attr_file or not os.path.isfile(attr_file):
+            raise FileNotFoundError(
+                "CelebA attribute annotations were not found. Expected list_attr_celeba.csv or .txt."
+            )
+
+        image_roots = [
+            self.root_dir,
+            os.path.join(self.root_dir, "img_align_celeba"),
+            os.path.join(self.root_dir, "img_align_celeba", "img_align_celeba"),
+        ]
+        raw_entries = []
+        if attr_file.lower().endswith('.csv'):
+            import csv
+            with open(attr_file, 'r', encoding='utf-8', errors='strict') as handle:
+                reader = csv.reader(handle)
+                next(reader, None)
+                for row in reader:
+                    if len(row) < 41:
                         continue
-                    for f in files:
-                        if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
-                            wild_images.append(os.path.join(root, f))
-                            
-        if len(wild_images) > 0:
-            for img_path in wild_images:
-                img_hash = sum(ord(c) for c in os.path.basename(img_path)) % 10000
-                torch.manual_seed(img_hash)
-                attr_target = (torch.rand(40) > 0.5).float()
-                self.samples.append((img_path, attr_target))
-                
-        if len(self.samples) == 0:
-            for i in range(500):
-                self.samples.append(("dummy_attr", (torch.rand(40) > 0.5).float()))
+                    raw_entries.append((row[0], torch.tensor([1.0 if int(x) == 1 else 0.0 for x in row[1:41]], dtype=torch.float32)))
+        else:
+            with open(attr_file, 'r', encoding='utf-8', errors='strict') as handle:
+                lines = handle.readlines()
+            for line in lines[2:]:
+                parts = line.strip().split()
+                if len(parts) >= 41:
+                    raw_entries.append((parts[0], torch.tensor([1.0 if int(x) == 1 else 0.0 for x in parts[1:41]], dtype=torch.float32)))
+
+        for image_name, target in raw_entries:
+            image_path = next((os.path.join(root, image_name) for root in image_roots if os.path.isfile(os.path.join(root, image_name))), None)
+            if image_path:
+                self.samples.append((image_path, target))
+        if not self.samples:
+            raise DatasetConfigurationError(f"No CelebA images matched annotations in {self.root_dir}")
 
     def __len__(self):
         return len(self.samples)
 
     def __getitem__(self, idx):
-        path, attr_target = self.samples[idx % len(self.samples)]
-        img = None
-        if path != "dummy_attr":
-            try:
-                if os.path.exists(path) and os.path.getsize(path) > 0:
-                    img = Image.open(path).convert('RGB')
-            except Exception:
-                img = None
-                
-        if img is None:
-            img = Image.new('RGB', self.image_size, (128, 128, 128))
-                
-        w, h = img.size
-        # Generate 7x7 spatial occlusion target mask (1.0 = clean, 0.0 = occluded)
-        gt_mask = torch.ones(1, 7, 7, dtype=torch.float32)
-        
-        # Self-Supervised Synthetic Occlusion Augmentation (Random Scenario Selection: 5 Scenarios)
-        if self.is_train and torch.rand(1).item() > 0.5:
-            scenario_type = torch.randint(0, 5, (1,)).item()
-            
-            if scenario_type == 0:
-                # Scenario 1: Lower-Face Mask / Scarf Scenario (Nose, Mouth, Chin)
-                r_start, r_end = 3, 7
-                c_start, c_end = 1, 6
-            elif scenario_type == 1:
-                # Scenario 2: Upper-Face Sunglasses / Hat Scenario (Eyes, Forehead)
-                r_start, r_end = 0, 3
-                c_start, c_end = 0, 7
-            elif scenario_type == 2:
-                # Scenario 3: Side-Face Profile / Hand / Hair Scenario
-                r_start, r_end = 0, 7
-                if torch.rand(1).item() > 0.5:
-                    c_start, c_end = 0, 3
-                else:
-                    c_start, c_end = 4, 7
-            elif scenario_type == 3:
-                # Scenario 4: Random Rectangular Occluder Scenario
-                r_start = torch.randint(0, 5, (1,)).item()
-                r_end = r_start + torch.randint(2, 4, (1,)).item()
-                c_start = torch.randint(0, 5, (1,)).item()
-                c_end = c_start + torch.randint(2, 4, (1,)).item()
-            else:
-                # Scenario 5: Multi-Patch / Scattered Occlusion Scenario
-                r1 = torch.randint(0, 4, (1,)).item()
-                c1 = torch.randint(0, 4, (1,)).item()
-                r2 = torch.randint(3, 6, (1,)).item()
-                c2 = torch.randint(3, 6, (1,)).item()
-                gt_mask[0, r1:min(7, r1+2), c1:min(7, c1+2)] = 0.0
-                gt_mask[0, r2:min(7, r2+2), c2:min(7, c2+2)] = 0.0
-                r_start, r_end, c_start, c_end = r1, min(7, r1+2), c1, min(7, c1+2)
-                
-            if scenario_type != 4:
-                gt_mask[0, r_start:r_end, c_start:c_end] = 0.0
-                
-            x1, y1 = int((c_start / 7.0) * w), int((r_start / 7.0) * h)
-            x2, y2 = int((c_end / 7.0) * w), int((r_end / 7.0) * h)
-            
-            try:
-                from PIL import ImageDraw
-                draw = ImageDraw.Draw(img)
-                occ_color = (torch.randint(20, 80, (1,)).item(), torch.randint(20, 80, (1,)).item(), torch.randint(20, 80, (1,)).item())
-                draw.rectangle([x1, y1, x2, y2], fill=occ_color)
-            except Exception:
-                pass
-            
-        img_tensor = self.transform(img)
-        return img_tensor, attr_target, gt_mask
+        if idx < 0 or idx >= len(self.samples):
+            raise IndexError(f"CelebA dataset index out of range: {idx}")
+        path, target = self.samples[idx]
+        try:
+            image = Image.open(path).convert('RGB')
+            return self.transform(image), target
+        except Exception as exc:
+            raise RuntimeError(f"Could not decode CelebA image {path}: {exc}") from exc
+
 
 CelebAAttributeDataset = Phase2UnifiedAttributeDataset

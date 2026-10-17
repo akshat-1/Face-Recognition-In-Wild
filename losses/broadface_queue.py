@@ -1,17 +1,22 @@
+"""CurricularFace with an explicit, DDP-safe BroadFace-style memory."""
+
 import math
+
 import torch
+import torch.distributed as dist
 import torch.nn as nn
 import torch.nn.functional as F
-import torch.distributed as dist
+
 
 class BroadFaceCurricularLoss(nn.Module):
+    """Margin classifier plus a detached queue of past face embeddings.
+
+    The queue is deliberately updated by :meth:`enqueue` after the optimizer
+    step. This prevents the old implementation's duplicate current-batch loss
+    and makes checkpoint/resume behavior explicit. Queue examples update the
+    classifier only; the current batch updates both classifier and backbone.
     """
-    Official Kakao Enterprise BroadFace + CurricularFace PyTorch Implementation.
-    Ref: https://github.com/kakaoenterprise/BroadFace
-    "BroadFace: Looking at Tens of Thousands of People at Once for Face Recognition", ECCV 2020.
-    
-    Combines BroadFace memory queue proxy compensation with CurricularFace adaptive margin learning.
-    """
+
     def __init__(
         self,
         in_features: int = 512,
@@ -23,142 +28,163 @@ class BroadFaceCurricularLoss(nn.Module):
         compensate: bool = True,
         feature_dim: int = None,
     ):
-        super(BroadFaceCurricularLoss, self).__init__()
+        super().__init__()
         if feature_dim is not None:
             in_features = feature_dim
-        self.in_features = in_features
-        self.num_classes = num_classes
-        self.scale_factor = scale_factor
-        self.margin = margin
-        self.alpha = alpha
-        self.queue_size = queue_size
-        self.compensate = compensate
+        if num_classes <= 0:
+            raise ValueError("num_classes must be positive")
+        if queue_size < 0:
+            raise ValueError("queue_size cannot be negative")
+        self.in_features = int(in_features)
+        self.num_classes = int(num_classes)
+        self.scale_factor = float(scale_factor)
+        self.margin = float(margin)
+        self.alpha = float(alpha)
+        self.queue_size = int(queue_size)
+        self.compensate = bool(compensate)
 
-        self.weight = nn.Parameter(torch.FloatTensor(num_classes, in_features))
+        self.weight = nn.Parameter(torch.empty(self.num_classes, self.in_features))
         nn.init.xavier_uniform_(self.weight)
+        self.register_buffer("t", torch.zeros(1))
+        self.register_buffer("feature_mb", torch.zeros(self.queue_size, self.in_features))
+        self.register_buffer("label_mb", torch.zeros(self.queue_size, dtype=torch.long))
+        self.register_buffer("proxy_mb", torch.zeros(self.queue_size, self.in_features))
+        self.register_buffer("queue_length", torch.zeros(1, dtype=torch.long))
+        self.register_buffer("queue_next", torch.zeros(1, dtype=torch.long))
 
-        self.register_buffer('t', torch.zeros(1))
-        self.cos_m = math.cos(margin)
-        self.sin_m = math.sin(margin)
-        self.th = math.cos(math.pi - margin)
-        self.mm = math.sin(math.pi - margin) * margin
-
-        feature_mb = torch.zeros(0, in_features)
-        label_mb = torch.zeros(0, dtype=torch.int64)
-        proxy_mb = torch.zeros(0, in_features)
-        self.register_buffer("feature_mb", feature_mb)
-        self.register_buffer("label_mb", label_mb)
-        self.register_buffer("proxy_mb", proxy_mb)
+        self.cos_m = math.cos(self.margin)
+        self.sin_m = math.sin(self.margin)
+        self.th = math.cos(math.pi - self.margin)
+        self.mm = math.sin(math.pi - self.margin) * self.margin
 
     @property
     def queue_ptr(self) -> torch.Tensor:
-        return torch.tensor(self.feature_mb.shape[0], device=self.weight.device)
+        return self.queue_length.to(self.weight.device)
 
     @property
     def is_full(self) -> torch.Tensor:
-        return torch.tensor(self.feature_mb.shape[0] >= self.queue_size, device=self.weight.device)
+        return self.queue_length.to(self.weight.device) >= self.queue_size
 
     def get_queue_samples(self):
-        return self.feature_mb, self.label_mb
+        length = int(self.queue_length.item())
+        return self.feature_mb[:length], self.label_mb[:length]
 
-    @torch.no_grad()
-    def update(self, input_tensor: torch.Tensor, label: torch.Tensor):
-        label = torch.clamp(label.long(), 0, self.num_classes - 1)
-        self.feature_mb = torch.cat([self.feature_mb, input_tensor.detach()], dim=0)
-        self.label_mb = torch.cat([self.label_mb, label.detach()], dim=0)
-        self.proxy_mb = torch.cat(
-            [self.proxy_mb, self.weight.data[label].clone()], dim=0
-        )
+    def _validate_labels(self, labels: torch.Tensor) -> torch.Tensor:
+        labels = labels.long()
+        if labels.ndim != 1:
+            raise ValueError(f"labels must be rank-1, got {tuple(labels.shape)}")
+        if labels.numel() and (labels.min().item() < 0 or labels.max().item() >= self.num_classes):
+            raise ValueError("labels contain an index outside the classifier range")
+        return labels
 
-        over_size = self.feature_mb.shape[0] - self.queue_size
-        if over_size > 0:
-            self.feature_mb = self.feature_mb[over_size:]
-            self.label_mb = self.label_mb[over_size:]
-            self.proxy_mb = self.proxy_mb[over_size:]
-
-    def compensate_weight_drift(self, old_weight: torch.Tensor, new_weight: torch.Tensor):
-        """
-        Calculates classifier weight drift delta_W = W_new - W_old for samples currently in proxy queue
-        and updates proxy representations to eliminate drift error.
-        """
-        if hasattr(self, 'proxy_mb') and self.proxy_mb.numel() > 0 and self.label_mb.numel() > 0:
-            with torch.no_grad():
-                labels = self.label_mb.long()
-                delta_weight = new_weight.data[labels] - old_weight.data[labels]
-                self.proxy_mb.add_(delta_weight)
-
-    def compute_curricular(self, x: torch.Tensor, y: torch.Tensor, w: torch.Tensor) -> torch.Tensor:
-        y = torch.clamp(y.long(), 0, self.num_classes - 1)
+    def compute_curricular(self, x: torch.Tensor, y: torch.Tensor, w: torch.Tensor,
+                           update_curriculum: bool = True) -> torch.Tensor:
+        y = self._validate_labels(y)
+        if x.ndim != 2 or x.shape[1] != self.in_features:
+            raise ValueError(f"embeddings must have shape (B,{self.in_features})")
         norm_embeddings = F.normalize(x.float(), p=2, dim=1)
         norm_weight = F.normalize(w.float(), p=2, dim=1)
-        
-        cos_theta = F.linear(norm_embeddings, norm_weight)
-        cos_theta = cos_theta.clamp(-1.0 + 1e-7, 1.0 - 1e-7)
-        
-        one_hot = torch.zeros_like(cos_theta)
-        one_hot.scatter_(1, y.view(-1, 1).long(), 1.0)
-        
-        cos_yi = cos_theta[one_hot.bool()]
-        
-        if self.training:
+        cos_theta = F.linear(norm_embeddings, norm_weight).clamp(-1.0 + 1e-7, 1.0 - 1e-7)
+        one_hot = F.one_hot(y, num_classes=self.num_classes).to(cos_theta.dtype)
+        cos_yi = (cos_theta * one_hot).sum(dim=1)
+
+        if self.training and update_curriculum and cos_yi.numel():
             with torch.no_grad():
                 mean_cos = cos_yi.mean()
                 if dist.is_available() and dist.is_initialized():
                     dist.all_reduce(mean_cos, op=dist.ReduceOp.SUM)
                     mean_cos /= dist.get_world_size()
-                self.t = self.alpha * self.t + (1.0 - self.alpha) * mean_cos
-        
-        sin_yi = torch.sqrt((1.0 - cos_yi ** 2).clamp(min=1e-7))
+                self.t.mul_(self.alpha).add_((1.0 - self.alpha) * mean_cos)
+
+        sin_yi = torch.sqrt((1.0 - cos_yi.square()).clamp_min(1e-7))
         cos_yi_m = cos_yi * self.cos_m - sin_yi * self.sin_m
         cos_yi_m = torch.where(cos_yi > self.th, cos_yi_m, cos_yi - self.mm)
-        
-        target_margin = cos_yi_m.view(-1, 1)
-        mask = 1.0 - one_hot
-        
-        is_hard = (target_margin < cos_theta) & mask.bool()
-        modulated_negatives = torch.where(
-            is_hard,
-            cos_theta * (self.t + cos_theta),
-            cos_theta
-        )
-        
-        output_logits = torch.where(one_hot.bool(), target_margin, modulated_negatives).float()
-        output_logits = output_logits * self.scale_factor
-        
-        return F.cross_entropy(output_logits, y)
+        target_margin = cos_yi_m[:, None]
+        is_hard = (target_margin < cos_theta) & (one_hot == 0)
+        negatives = torch.where(is_hard, cos_theta * (self.t + cos_theta), cos_theta)
+        logits = torch.where(one_hot.bool(), target_margin, negatives) * self.scale_factor
+        return F.cross_entropy(logits.float(), y)
+
+    def _compensated_queue(self) -> torch.Tensor:
+        length = int(self.queue_length.item())
+        if length == 0:
+            return self.feature_mb[:0]
+        features = self.feature_mb[:length]
+        labels = self.label_mb[:length]
+        proxies = self.proxy_mb[:length]
+        current_proxy = self.weight.detach()[labels]
+        if not self.compensate:
+            return features
+        drift = current_proxy - proxies
+        scale = features.norm(dim=1, keepdim=True) / proxies.norm(dim=1, keepdim=True).clamp_min(1e-7)
+        return features + scale * drift
 
     def forward(self, input_tensor: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
-        if self.label_mb.shape[0] == 0:
-            batch_loss = self.compute_curricular(input_tensor, label, self.weight)
-            with torch.no_grad():
-                self.update(input_tensor, label)
-            return batch_loss
+        label = self._validate_labels(label)
+        current_loss = self.compute_curricular(input_tensor, label, self.weight)
+        if int(self.queue_length.item()) == 0:
+            return current_loss
 
-        weight_now = self.weight.data[self.label_mb]
-        delta_weight = weight_now - self.proxy_mb
+        # Queue embeddings are detached, so this term trains the classifier
+        # without backpropagating stale representations into the backbone.
+        queue_features = self._compensated_queue().detach()
+        queue_loss = self.compute_curricular(queue_features, self.label_mb[:int(self.queue_length.item())], self.weight, update_curriculum=False)
+        return current_loss + queue_loss
 
-        if self.compensate:
-            update_feature_mb = (
-                self.feature_mb
-                + (
-                    self.feature_mb.norm(p=2, dim=1, keepdim=True)
-                    / (self.proxy_mb.norm(p=2, dim=1, keepdim=True) + 1e-7)
-                )
-                * delta_weight
-            )
-        else:
-            update_feature_mb = self.feature_mb
+    @torch.no_grad()
+    def enqueue(self, embeddings: torch.Tensor, labels: torch.Tensor) -> None:
+        """Enqueue samples after an optimizer step, synchronizing DDP ranks."""
+        labels = self._validate_labels(labels).detach()
+        embeddings = F.normalize(embeddings.detach().float(), p=2, dim=1)
+        if embeddings.shape[0] != labels.shape[0]:
+            raise ValueError("embeddings and labels must contain the same number of samples")
+        if embeddings.numel() == 0 or self.queue_size == 0:
+            return
 
-        large_input = torch.cat([update_feature_mb, input_tensor], dim=0)
-        large_label = torch.cat([self.label_mb, label], dim=0)
+        if dist.is_available() and dist.is_initialized():
+            world_size = dist.get_world_size()
+            gathered_features = [torch.empty_like(embeddings) for _ in range(world_size)]
+            gathered_labels = [torch.empty_like(labels) for _ in range(world_size)]
+            dist.all_gather(gathered_features, embeddings)
+            dist.all_gather(gathered_labels, labels)
+            embeddings = torch.cat(gathered_features, dim=0)
+            labels = torch.cat(gathered_labels, dim=0)
 
-        batch_loss = self.compute_curricular(input_tensor, label, self.weight)
-        broad_loss = self.compute_curricular(large_input, large_label, self.weight)
-        
-        with torch.no_grad():
-            self.update(input_tensor, label)
+        proxies = self.weight.detach()[labels]
+        if embeddings.shape[0] >= self.queue_size:
+            embeddings = embeddings[-self.queue_size:]
+            labels = labels[-self.queue_size:]
+            proxies = proxies[-self.queue_size:]
+            self.feature_mb.copy_(embeddings)
+            self.label_mb.copy_(labels)
+            self.proxy_mb.copy_(proxies)
+            self.queue_length.fill_(self.queue_size)
+            self.queue_next.zero_()
+            return
 
-        return batch_loss + broad_loss
+        pointer = int(self.queue_next.item())
+        length = int(self.queue_length.item())
+        for index in range(embeddings.shape[0]):
+            self.feature_mb[pointer].copy_(embeddings[index])
+            self.label_mb[pointer].copy_(labels[index])
+            self.proxy_mb[pointer].copy_(proxies[index])
+            pointer = (pointer + 1) % self.queue_size
+            length = min(self.queue_size, length + 1)
+        self.queue_next.fill_(pointer)
+        self.queue_length.fill_(length)
 
-# Backward compatibility alias
+    # Compatibility with existing callers. New training code should use
+    # enqueue() after optimizer.step().
+    update = enqueue
+
+    @torch.no_grad()
+    def compensate_weight_drift(self, old_weight: torch.Tensor, new_weight: torch.Tensor):
+        length = int(self.queue_length.item())
+        if length == 0:
+            return
+        labels = self.label_mb[:length]
+        delta = new_weight.detach()[labels] - old_weight.detach()[labels]
+        self.proxy_mb[:length].add_(delta)
+
+
 BroadFaceMemoryQueue = BroadFaceCurricularLoss

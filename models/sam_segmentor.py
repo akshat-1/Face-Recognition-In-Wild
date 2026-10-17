@@ -199,10 +199,11 @@ class SAMMaskDecoder(nn.Module):
 
 class SAMFaceSegmentor(nn.Module):
     """
-    Official Meta AI Segment Anything Model (SAM) Architecture Implementation for Face Foreground Segmentation.
-    Strict Reference:
-    - Kirillov et al., "Segment Anything" (SAM), ICCV 2023 / arXiv:2304.02643
-    - Meta AI Official SAM Implementation (github.com/facebookresearch/segment-anything)
+    Lightweight prompt-compatible foreground mask module.
+
+    This is not a drop-in Meta SAM checkpoint or full SAM image encoder. It is
+    retained as an optional learned preprocessor and must be checkpointed
+    before it is enabled in recognition.
     """
     def __init__(self, embed_dim: int = 256, image_size: int = 112):
         super(SAMFaceSegmentor, self).__init__()
@@ -257,6 +258,19 @@ class SAMFaceSegmentor(nn.Module):
 
         # Select primary face mask and upsample to original crop size (H, W)
         primary_mask = torch.sigmoid(masks[:, 0:1, :, :]) # (B, 1, 28, 28)
+        if box_prompt is not None:
+            if box_prompt.shape != (B, 4):
+                raise ValueError(f"box_prompt must have shape ({B},4)")
+            _, _, mask_h, mask_w = primary_mask.shape
+            prior = torch.zeros_like(primary_mask)
+            for index, box in enumerate(box_prompt):
+                x1, y1, x2, y2 = box
+                ix1 = int(torch.floor(x1 / max(float(W), 1.0) * mask_w).clamp(0, mask_w - 1).item())
+                iy1 = int(torch.floor(y1 / max(float(H), 1.0) * mask_h).clamp(0, mask_h - 1).item())
+                ix2 = int(torch.ceil(x2 / max(float(W), 1.0) * mask_w).clamp(ix1 + 1, mask_w).item())
+                iy2 = int(torch.ceil(y2 / max(float(H), 1.0) * mask_h).clamp(iy1 + 1, mask_h).item())
+                prior[index, :, iy1:iy2, ix1:ix2] = 1.0
+            primary_mask = primary_mask * prior
         face_mask_sam = F.interpolate(primary_mask, size=(H, W), mode='bilinear', align_corners=False).clamp(0.0, 1.0)
 
         return face_mask_sam

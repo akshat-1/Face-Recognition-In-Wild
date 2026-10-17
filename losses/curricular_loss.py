@@ -43,6 +43,10 @@ class CurricularFaceLoss(nn.Module):
         Returns:
             loss: scalar cross-entropy loss with adaptive curricular margin modulation
         """
+        if labels.ndim != 1 or labels.shape[0] != embeddings.shape[0]:
+            raise ValueError("labels must be rank-1 and align with embeddings")
+        if labels.numel() and (labels.min().item() < 0 or labels.max().item() >= self.num_classes):
+            raise ValueError("labels contain an index outside the classifier range")
         # Ensure FP32 precision for margin and cosine trigonometric calculations under AMP
         norm_embeddings = F.normalize(embeddings.float(), p=2, dim=1)
         norm_weight = F.normalize(self.weight.float(), p=2, dim=1)

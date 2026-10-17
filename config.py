@@ -1,25 +1,29 @@
-import os
 from dataclasses import dataclass, field
-from typing import List, Tuple
+from typing import Tuple
 
 @dataclass
 class DatasetConfig:
-    train_data_dir: str = "" # Path to labeled face dataset (ROF, LFW, WIDER)
-    unlabeled_data_dir: str = "" # Path to unlabeled face dataset (FMD, COVID faces, web crawls)
+    train_data_dir: str = "" # Identity-labelled, face-crop dataset
+    unlabeled_data_dir: str = "" # Optional unlabeled face-crop dataset
     val_data_dir: str = ""
     celeba_dir: str = ""
     image_size: Tuple[int, int] = (112, 112)
-    num_classes: int = 10575 # Default WebFace-OCC number of identities
+    num_classes: int = 0 # Derived from the labelled manifest; never silently guessed
     num_workers: int = 4
+    allow_synthetic_fixtures: bool = False
 
 @dataclass
 class ModelConfig:
     backbone_type: str = "iresnet100" # "iresnet100" or "vit_face_base"
     embedding_dim: int = 512
     fp16: bool = True
-    use_pim_frontalizer: bool = True
-    use_anet_attributes: bool = True
-    use_gcn_clustering: bool = True
+    detector_backend: str = "auto" # auto, yunet, mtcnn, none
+    detector_score_threshold: float = 0.40
+    use_foreground_mask: bool = False
+    use_pim_frontalizer: bool = False
+    use_anet_attributes: bool = False
+    use_gcn_clustering: bool = False
+    pose_gate_degrees: float = 35.0
     lista_num_layers: int = 5
     atoms_per_class: int = 20
 
@@ -32,6 +36,8 @@ class LossConfig:
     broadface_momentum: float = 0.99
     lambda_semi: float = 0.5 # Weight for semi-supervised pseudo-labeled loss
     pseudo_label_threshold: float = 0.75 # Confidence threshold for GCN graph clustering
+    unknown_similarity_threshold: float = 0.45
+    unknown_margin_threshold: float = 0.05
 
 @dataclass
 class TrainConfig:
@@ -44,6 +50,7 @@ class TrainConfig:
     checkpoint_dir: str = "./checkpoints"
     log_interval: int = 50
     device: str = "cuda"
+    seed: int = 42
 
 @dataclass
 class SystemConfig:

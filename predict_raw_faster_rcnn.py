@@ -6,7 +6,7 @@ import torch
 import numpy as np
 from PIL import Image, ImageDraw
 
-from models.detector import LNetAnchorFaceLocalizer
+from models.detector import SOTAFaceDetector
 
 VALID_IMAGE_EXTENSIONS = ('.jpg', '.jpeg', '.png', '.bmp', '.webp')
 
@@ -42,7 +42,7 @@ def generate_predictions_grid(output_dir: str, grid_filename: str = "raw_predict
     
     # Top banner title
     draw.rectangle([0, 0, grid_w, banner_h], fill=(40, 30, 70))
-    title_text = f"Raw Codebase Localizer Model (LNetAnchorFaceLocalizer) Grid ({num_images} Scenes)"
+    title_text = f"Raw Face Detector Grid ({num_images} Scenes)"
     draw.text((padding + 10, 22), title_text, fill=(255, 255, 255))
     
     for idx, img_path in enumerate(pred_files):
@@ -75,15 +75,15 @@ def generate_predictions_grid(output_dir: str, grid_filename: str = "raw_predict
 
 def run_raw_detector_inference(target_path: str, output_dir: str = "./results/raw_pretrained"):
     """
-    Runs inference using ONLY the raw native localizer model (LNetAnchorFaceLocalizer) built inside our codebase.
+    Runs inference using the configured face detector without recognition.
     """
     print(f"========================================================================")
-    print(f"--- Native Raw Architecture Model (LNetAnchorFaceLocalizer) Inference ---")
+    print(f"--- Raw Face Detector Inference ---")
     print(f"Target Path: {target_path} | Output Directory: {output_dir}")
     print(f"========================================================================\n")
     
     device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-    model = LNetAnchorFaceLocalizer().to(device)
+    model = SOTAFaceDetector(weights_dir="./weights", backend="auto").to(device)
     model.eval()
     
     os.makedirs(output_dir, exist_ok=True)
@@ -153,7 +153,7 @@ def run_raw_detector_inference(target_path: str, output_dir: str = "./results/ra
                 draw.rectangle([x1, y1, x2, y2], outline=box_color, width=max(3, int(orig_w / 120)))
                 
                 # Label tag
-                label_text = f"Raw LNet | {score:.0%}"
+                label_text = f"Raw detector | {score:.0%}"
                 text_height = max(18, int(orig_h / 25))
                 font_box_y1 = max(0, y1 - text_height)
                 draw.rectangle([x1, font_box_y1, x1 + len(label_text) * 8, max(0, y1)], fill=box_color)

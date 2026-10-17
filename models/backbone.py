@@ -310,6 +310,16 @@ class FasterRCNNBackbone(nn.Module):
             self.fpn_backbone = faster_rcnn.backbone # ResNet-50 FPN feature representation layers before output layer
         except Exception:
             self.fpn_backbone = None
+
+        # Registered, deterministic fallback. The old implementation created a
+        # new random Linear layer inside every forward call, so it could never
+        # learn and produced different embeddings for identical inputs.
+        self.fallback_head = nn.Sequential(
+            nn.AdaptiveAvgPool2d((7, 7)),
+            nn.Flatten(),
+            nn.Linear(3 * 7 * 7, embedding_dim, bias=False),
+            nn.BatchNorm1d(embedding_dim),
+        )
             
         self.head = nn.Sequential(
             nn.Conv2d(256 * 4, 512, kernel_size=3, padding=1),
@@ -323,13 +333,8 @@ class FasterRCNNBackbone(nn.Module):
 
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         if self.fpn_backbone is None:
-            # Fallback tensor projection if torchvision is unavailable
-            b, c, h, w = x.shape
-            proj = F.adaptive_avg_pool2d(x, (1, 1)).flatten(1)
-            if proj.size(1) != self.embedding_dim:
-                proj = F.interpolate(x, size=(7, 7), mode='bilinear').flatten(1)
-                proj = nn.Linear(proj.size(1), self.embedding_dim, device=x.device)(proj)
-            return F.normalize(proj, p=2, dim=1)
+            x_norm = ((x + 1.0) / 2.0).clamp(0.0, 1.0)
+            return F.normalize(self.fallback_head(x_norm), p=2, dim=1)
             
         # Convert [-1, 1] input image tensor to torchvision [0, 1] format
         x_norm = ((x + 1.0) / 2.0).clamp(0.0, 1.0)

@@ -1,43 +1,54 @@
-import os
-import argparse
-import warnings
-warnings.filterwarnings("ignore")
+"""Training entry point for the corrected recognition pipeline.
 
+Recognition training operates on identity-labelled face crops. Detection and
+alignment are inference/data-preparation concerns; random untrained masks and
+generators are never inserted into the backbone training path.
+"""
+
+import argparse
+import os
+import random
+from dataclasses import asdict
+
+import numpy as np
 import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
 import torch.distributed as dist
-import torch.multiprocessing as mp
-try:
-    mp.set_sharing_strategy('file_system')
-except Exception:
-    pass
-from torch.utils.data import DataLoader
+import torch.nn as nn
+import torch.optim as optim
+from torch.amp import GradScaler, autocast
+from torch.utils.data import DataLoader, Dataset
 from torch.utils.data.distributed import DistributedSampler
-from torch.amp import autocast, GradScaler
+from PIL import Image
 
 from config import SystemConfig
-from dataset import WildFaceDataset, UnlabeledFaceDataset, CelebAAttributeDataset
+from dataset import CelebAAttributeDataset, UnlabeledFaceDataset, WildFaceDataset, get_default_transform
 from losses.broadface_queue import BroadFaceCurricularLoss
-from losses.wing_loss import WingLoss
-from models.backbone import ResNet100Backbone, vit_face_base, FasterRCNNBackbone
-from models.detector import FasterRCNNFaceDetector
 from models.anet_attribute import ANetAttributeParser
-from models.sam_segmentor import SAMFaceSegmentor
-from models.pim_frontalizer import PIMFrontalizationGAN
+from models.backbone import FasterRCNNBackbone, ResNet100Backbone, vit_face_base
 from models.gcn_cluster import GCNLinkPredictor
+
+
+def seed_everything(seed: int) -> None:
+    random.seed(seed)
+    np.random.seed(seed)
+    torch.manual_seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+
 
 def get_backbone(cfg: SystemConfig):
     if cfg.model.backbone_type == "vit_face_base":
         return vit_face_base(embedding_dim=cfg.model.embedding_dim)
-    elif cfg.model.backbone_type == "fasterrcnn_backbone":
+    if cfg.model.backbone_type == "fasterrcnn_backbone":
         return FasterRCNNBackbone(embedding_dim=cfg.model.embedding_dim)
-    return ResNet100Backbone(embedding_dim=cfg.model.embedding_dim)
+    if cfg.model.backbone_type == "iresnet100":
+        return ResNet100Backbone(embedding_dim=cfg.model.embedding_dim)
+    raise ValueError(f"Unsupported backbone type: {cfg.model.backbone_type}")
+
 
 def setup_ddp():
-    is_ddp = "RANK" in os.environ and "WORLD_SIZE" in os.environ
-    if is_ddp and torch.cuda.is_available():
+    is_ddp = "RANK" in os.environ and "WORLD_SIZE" in os.environ and torch.cuda.is_available()
+    if is_ddp:
         rank = int(os.environ["RANK"])
         local_rank = int(os.environ["LOCAL_RANK"])
         world_size = int(os.environ["WORLD_SIZE"])
@@ -45,411 +56,277 @@ def setup_ddp():
         dist.init_process_group(backend="nccl")
         device = torch.device(f"cuda:{local_rank}")
     else:
-        rank = 0
-        local_rank = 0
-        world_size = 1
-        is_ddp = False
+        rank, local_rank, world_size, is_ddp = 0, 0, 1, False
         device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
     return is_ddp, rank, local_rank, world_size, device
 
-def train_phase1_backbone_curricular(cfg: SystemConfig, device: torch.device, is_ddp: bool = False, rank: int = 0, local_rank: int = 0, world_size: int = 1, resume: bool = False, force_retrain: bool = False):
-    """
-    Phase 1 Training: Backbone (IResNet-100 / ViT-Face) + CurricularFace Adaptive Loss + BroadFace Queue.
-    Configured for Commercial SOTA standard (100 Epochs with periodic checkpointing).
-    """
-    if rank == 0:
-        print(f"\n========================================================================")
-        print(f"--- Starting Phase 1: {cfg.model.backbone_type.upper()} & CurricularFace SOTA Training ({cfg.train.epochs} Epochs) ---")
-        print(f"========================================================================\n")
-    
-    train_dataset = WildFaceDataset(root_dir=cfg.dataset.train_data_dir, is_train=True)
-    if is_ddp:
-        sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=cfg.train.batch_size,
-            sampler=sampler,
-            num_workers=cfg.dataset.num_workers,
-            pin_memory=True
-        )
-    else:
-        sampler = None
-        train_loader = DataLoader(
-            train_dataset,
-            batch_size=cfg.train.batch_size,
-            shuffle=True,
-            num_workers=cfg.dataset.num_workers,
-            pin_memory=True
-        )
-    
-    num_classes = len(train_dataset.class_to_idx) if train_dataset.class_to_idx else cfg.dataset.num_classes
-    if rank == 0:
-        print(f"Labeled training dataset initialized: {len(train_dataset)} samples across {num_classes} identities.")
-    
+
+class RecognitionModel(nn.Module):
+    """Wrap backbone and classifier so DDP synchronizes both parameter sets."""
+
+    def __init__(self, backbone: nn.Module, loss_fn: BroadFaceCurricularLoss):
+        super().__init__()
+        self.backbone = backbone
+        self.loss_fn = loss_fn
+
+    def forward(self, images: torch.Tensor, labels: torch.Tensor):
+        embeddings = self.backbone(images)
+        return self.loss_fn(embeddings, labels), embeddings
+
+
+def _state(module):
+    raw = module.module if hasattr(module, "module") else module
+    return raw.state_dict()
+
+
+def _backbone_state(module):
+    raw = module.module if hasattr(module, "module") else module
+    if hasattr(raw, "backbone"):
+        raw = raw.backbone
+    return raw.state_dict()
+
+
+def _save_phase1(path, epoch, backbone, loss_fn, optimizer, scheduler, scaler, cfg, class_to_idx):
+    torch.save({
+        "schema_version": 2,
+        "kind": "recognition_backbone",
+        "epoch": epoch,
+        "backbone": _backbone_state(backbone),
+        "backbone_state": _backbone_state(backbone),
+        "broadface_loss_fn": loss_fn.state_dict(),
+        "optimizer": optimizer.state_dict(),
+        "scheduler": scheduler.state_dict(),
+        "scaler": scaler.state_dict(),
+        "model_config": asdict(cfg.model),
+        "input_size": list(cfg.dataset.image_size),
+        "loss_config": asdict(cfg.loss),
+        "class_to_idx": dict(class_to_idx),
+    }, path)
+
+
+def train_phase1_backbone_curricular(
+    cfg: SystemConfig,
+    device: torch.device,
+    is_ddp: bool = False,
+    rank: int = 0,
+    local_rank: int = 0,
+    world_size: int = 1,
+    resume: bool = False,
+    force_retrain: bool = False,
+):
+    """Train an identity backbone on real labelled face crops."""
+    if tuple(cfg.dataset.image_size) != (112, 112):
+        raise ValueError("Recognition backbones in this pipeline require image_size=(112,112)")
+    dataset = WildFaceDataset(
+        root_dir=cfg.dataset.train_data_dir,
+        is_train=True,
+        image_size=cfg.dataset.image_size,
+        allow_synthetic=cfg.dataset.allow_synthetic_fixtures,
+    )
+    num_classes = len(dataset.class_to_idx)
+    if num_classes <= 0:
+        raise ValueError("The labelled dataset contains no identities")
+    sampler = DistributedSampler(dataset, num_replicas=world_size, rank=rank, shuffle=True) if is_ddp else None
+    loader = DataLoader(
+        dataset,
+        batch_size=cfg.train.batch_size,
+        sampler=sampler,
+        shuffle=sampler is None,
+        num_workers=cfg.dataset.num_workers,
+        pin_memory=device.type == "cuda",
+        drop_last=is_ddp,
+    )
+
     backbone = get_backbone(cfg).to(device)
-    detector = FasterRCNNFaceDetector(weights_dir=cfg.train.checkpoint_dir).to(device)
-    detector.eval()
-    sam_segmentor = SAMFaceSegmentor().to(device)
-    sam_segmentor.eval()
-    frontalizer = PIMFrontalizationGAN().to(device)
-    frontalizer.eval()
-    
-    broadface_loss_fn = BroadFaceCurricularLoss(
+    loss_fn = BroadFaceCurricularLoss(
         in_features=cfg.model.embedding_dim,
         num_classes=num_classes,
         scale_factor=cfg.loss.scale,
         margin=cfg.loss.margin,
         alpha=cfg.loss.ema_alpha,
         queue_size=cfg.loss.queue_size,
-        compensate=True
+        compensate=True,
     ).to(device)
-    
-    # Check if completed Phase 1 pretrained checkpoint exists
-    phase1_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase1_epoch_100.pt")
-    if not os.path.exists(phase1_ckpt):
-        phase1_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase1_backbone_curricular.pt")
-        
-    if not force_retrain and os.path.exists(phase1_ckpt):
-        try:
-            ckpt_data = torch.load(phase1_ckpt, map_location=device)
-            backbone.load_state_dict(ckpt_data['backbone'])
-            saved_epoch = ckpt_data.get('epoch', 100)
-            if rank == 0:
-                print(f"\n[Phase 1 Pretrained] Loaded {saved_epoch}-epoch trained backbone weights from {phase1_ckpt}. Skipping Phase 1 training!\n", flush=True)
-            return backbone, num_classes
-        except Exception as e:
-            if rank == 0:
-                print(f"Warning: Could not load {phase1_ckpt}: {e}")
-
-    # Resume from latest checkpoint if explicitly requested
-    start_epoch = 1
-    os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
-    latest_ckpt = os.path.join(cfg.train.checkpoint_dir, "latest_backbone.pt")
-    if resume and os.path.exists(latest_ckpt):
-        try:
-            ckpt_data = torch.load(latest_ckpt, map_location=device)
-            backbone.load_state_dict(ckpt_data['backbone'])
-            if 'broadface_loss_fn' in ckpt_data:
-                broadface_loss_fn.load_state_dict(ckpt_data['broadface_loss_fn'])
-            start_epoch = ckpt_data.get('epoch', 1) + 1
-            if rank == 0:
-                print(f"✓ Resumed training state from checkpoint: {latest_ckpt} (Starting at Epoch {start_epoch})")
-        except Exception as e:
-            if rank == 0:
-                print(f"Warning: Failed to load checkpoint {latest_ckpt}: {e}. Starting fresh.")
-
-    if is_ddp and device.type == 'cuda':
-        backbone = nn.parallel.DistributedDataParallel(backbone, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
-    
+    model = RecognitionModel(backbone, loss_fn).to(device)
     optimizer = optim.SGD(
-        list(backbone.parameters()) + list(broadface_loss_fn.parameters()),
+        model.parameters(),
         lr=cfg.train.learning_rate,
         momentum=cfg.train.momentum,
-        weight_decay=cfg.train.weight_decay
+        weight_decay=cfg.train.weight_decay,
     )
-    for group in optimizer.param_groups:
-        group.setdefault('initial_lr', cfg.train.learning_rate)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=cfg.train.epochs, last_epoch=start_epoch - 2 if start_epoch > 1 else -1)
-    scaler = GradScaler('cuda', enabled=cfg.model.fp16 and device.type == 'cuda')
-    
-    backbone.train()
-    broadface_loss_fn.train()
-    
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=max(1, cfg.train.epochs))
+    scaler = GradScaler("cuda", enabled=cfg.model.fp16 and device.type == "cuda")
+    start_epoch = 1
+    checkpoint_dir = cfg.train.checkpoint_dir
+    os.makedirs(checkpoint_dir, exist_ok=True)
+    final_path = os.path.join(checkpoint_dir, "recognition_backbone.pt")
+    resume_path = os.path.join(checkpoint_dir, "latest_backbone.pt")
+
+    if os.path.isfile(final_path) and not force_retrain and not resume:
+        checkpoint = torch.load(final_path, map_location=device)
+        state = checkpoint.get("backbone_state", checkpoint.get("backbone"))
+        if state is None:
+            raise ValueError(f"Invalid recognition checkpoint: {final_path}")
+        backbone.load_state_dict({key.removeprefix("module."): value for key, value in state.items()})
+        if rank == 0:
+            print(f"Loaded completed Phase 1 checkpoint: {final_path}")
+        return backbone, num_classes
+
+    if resume and os.path.isfile(resume_path):
+        checkpoint = torch.load(resume_path, map_location=device)
+        backbone.load_state_dict(checkpoint["backbone_state"])
+        loss_fn.load_state_dict(checkpoint["broadface_loss_fn"])
+        optimizer.load_state_dict(checkpoint["optimizer"])
+        scheduler.load_state_dict(checkpoint["scheduler"])
+        if checkpoint.get("scaler"):
+            scaler.load_state_dict(checkpoint["scaler"])
+        start_epoch = int(checkpoint["epoch"]) + 1
+
+    if is_ddp:
+        model = nn.parallel.DistributedDataParallel(
+            model, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=False
+        )
+
     for epoch in range(start_epoch, cfg.train.epochs + 1):
+        model.train()
         if sampler is not None:
             sampler.set_epoch(epoch)
-            
-        if hasattr(train_dataset, "rescan"):
-            new_count = train_dataset.rescan()
-            if is_ddp:
-                sampler = DistributedSampler(train_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-                train_loader = DataLoader(
-                    train_dataset,
-                    batch_size=cfg.train.batch_size,
-                    sampler=sampler,
-                    num_workers=cfg.dataset.num_workers,
-                    pin_memory=True
-                )
-            
         running_loss = 0.0
-        for step, batch in enumerate(train_loader):
-            images, labels, _ = batch
-            images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
-            
-            optimizer.zero_grad()
-            with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
-                with torch.no_grad():
-                    mask_sam = sam_segmentor(images)
-                segmented_images = images * mask_sam
-                
-                # Check head pose yaw angle heuristic during Phase 1 training
-                crop_aspect_ratio = images.shape[3] / float(images.shape[2] + 1e-5)
-                estimated_yaw = (crop_aspect_ratio - 1.0) * 45.0
-                if abs(estimated_yaw) > 20.0:
-                    with torch.no_grad():
-                        segmented_images = frontalizer(segmented_images, yaw_angle=estimated_yaw)
-                        
-                embeddings = backbone(segmented_images)
-                loss = broadface_loss_fn(embeddings, labels)
-                
+        for images, labels, _ in loader:
+            images = images.to(device, non_blocking=True)
+            labels = labels.to(device, non_blocking=True)
+            optimizer.zero_grad(set_to_none=True)
+            with autocast("cuda", enabled=cfg.model.fp16 and device.type == "cuda"):
+                loss, embeddings = model(images, labels)
             scaler.scale(loss).backward()
             scaler.step(optimizer)
             scaler.update()
-            running_loss += loss.item()
-            
+            raw_model = model.module if hasattr(model, "module") else model
+            raw_model.loss_fn.enqueue(embeddings.detach(), labels)
+            running_loss += float(loss.detach().item())
         scheduler.step()
-        avg_loss = running_loss / max(1, len(train_loader))
-        t_param = broadface_loss_fn.t.item()
         if rank == 0:
-            print(f"Epoch [{epoch}/{cfg.train.epochs}] - BroadFace Curricular Loss: {avg_loss:.4f} | EMA t: {t_param:.4f}")
-            
-            # Periodic checkpointing every 10 epochs
+            average = running_loss / max(1, len(loader))
+            print(f"Phase 1 epoch {epoch}/{cfg.train.epochs} loss={average:.5f} t={loss_fn.t.item():.4f}")
             if epoch % 10 == 0 or epoch == cfg.train.epochs:
-                backbone_state = backbone.module.state_dict() if hasattr(backbone, 'module') else backbone.state_dict()
-                save_dict = {
-                    'epoch': epoch,
-                    'backbone': backbone_state,
-                    'broadface_loss_fn': broadface_loss_fn.state_dict(),
-                }
-                periodic_path = os.path.join(cfg.train.checkpoint_dir, f"phase1_epoch_{epoch}.pt")
-                torch.save(save_dict, periodic_path)
-                torch.save(save_dict, latest_ckpt)
-                print(f"✓ Saved periodic checkpoint to: {periodic_path}")
-        
-    if rank == 0:
-        ckpt_path = os.path.join(cfg.train.checkpoint_dir, "phase1_backbone_curricular.pt")
-        backbone_state = backbone.module.state_dict() if hasattr(backbone, 'module') else backbone.state_dict()
-        torch.save({
-            'epoch': cfg.train.epochs,
-            'backbone': backbone_state,
-            'broadface_loss_fn': broadface_loss_fn.state_dict(),
-        }, ckpt_path)
-        print(f"\n[Phase 1 Complete] Final Phase 1 Checkpoint saved to: {ckpt_path}")
-    return backbone, num_classes
+                _save_phase1(os.path.join(checkpoint_dir, f"phase1_epoch_{epoch}.pt"), epoch, model, loss_fn, optimizer, scheduler, scaler, cfg, dataset.class_to_idx)
+                _save_phase1(resume_path, epoch, model, loss_fn, optimizer, scheduler, scaler, cfg, dataset.class_to_idx)
 
-def train_phase2_anet_attributes(cfg: SystemConfig, backbone: nn.Module = None, device: torch.device = None, is_ddp: bool = False, rank: int = 0, local_rank: int = 0, world_size: int = 1, force_retrain: bool = False):
-    """
-    Phase 2 Training: ANet Multi-Task 40-Attribute Parser & Spatial Occlusion Attention.
-    Trained across all datasets (unlabeled, labeled, celeba) with self-supervised spatial mask supervision.
-    """
     if rank == 0:
-        print(f"\n========================================================================")
-        print(f"--- Starting Phase 2: ANet Multi-Task Attribute Parser Training ---")
-        print(f"========================================================================\n")
-    
-    celeba_dataset = CelebAAttributeDataset(root_dir=cfg.dataset.celeba_dir, is_train=True)
-    if is_ddp:
-        sampler = DistributedSampler(celeba_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        train_loader = DataLoader(celeba_dataset, batch_size=cfg.train.batch_size, sampler=sampler, num_workers=cfg.dataset.num_workers, pin_memory=True)
-    else:
-        sampler = None
-        train_loader = DataLoader(celeba_dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.dataset.num_workers, pin_memory=True)
-    
-    if rank == 0:
-        print(f"Phase 2 Unified Attribute Dataset initialized: {len(celeba_dataset)} images across all datasets.")
-    
+        _save_phase1(final_path, cfg.train.epochs, model, loss_fn, optimizer, scheduler, scaler, cfg, dataset.class_to_idx)
+    return model.module.backbone if hasattr(model, "module") else model.backbone, num_classes
+
+
+def train_phase2_anet_attributes(cfg: SystemConfig, backbone=None, device=None, **kwargs):
+    """Optional attribute training using only genuinely annotated CelebA rows."""
+    if tuple(cfg.dataset.image_size) != (112, 112):
+        raise ValueError("Attribute parser training requires image_size=(112,112)")
+    rank = kwargs.get("rank", 0)
+    dataset = CelebAAttributeDataset(root_dir=cfg.dataset.celeba_dir, image_size=cfg.dataset.image_size, is_train=True)
+    loader = DataLoader(dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.dataset.num_workers)
     anet = ANetAttributeParser(num_attributes=40).to(device)
-    sam_segmentor = SAMFaceSegmentor().to(device)
-    frontalizer = PIMFrontalizationGAN().to(device)
-    frontalizer.eval()
-    
-    # Check if completed Phase 2 pretrained checkpoint exists (skip only if not force_retrain)
-    phase2_ckpt = os.path.join(cfg.train.checkpoint_dir, "phase2_anet_attributes.pt")
-    if os.path.exists(phase2_ckpt) and not force_retrain:
-        try:
-            ckpt_data = torch.load(phase2_ckpt, map_location=device)
-            anet.load_state_dict(ckpt_data['anet'])
-            if rank == 0:
-                print(f"\n[Phase 2 Pretrained] Loaded ANet attribute parser weights from {phase2_ckpt}. Skipping Phase 2 training!\n")
-            return anet
-        except Exception as e:
-            if rank == 0:
-                print(f"Warning: Could not load {phase2_ckpt}: {e}")
-                
-    if rank == 0:
-        print(f"[Phase 2 Setup] Transferring Phase 1 identity backbone weights into ANet feature extractor...")
     if backbone is not None:
         anet.init_from_backbone(backbone)
-
-    if is_ddp and device.type == 'cuda':
-        anet = nn.parallel.DistributedDataParallel(anet, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
-        
-    criterion_bce = nn.BCEWithLogitsLoss()
-    criterion_mask = nn.BCELoss()
-    criterion_wing = WingLoss(omega=10.0, epsilon=2.0).to(device)
-    optimizer = optim.Adam(list(anet.parameters()) + list(sam_segmentor.parameters()), lr=1e-3, weight_decay=1e-4)
-    
-    phase2_epochs = min(cfg.train.epochs, 30)
-    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=phase2_epochs, eta_min=1e-5)
-    scaler = GradScaler('cuda', enabled=cfg.model.fp16 and device.type == 'cuda')
-    
-    anet.train()
-    for epoch in range(1, phase2_epochs + 1):
-        if sampler is not None:
-            sampler.set_epoch(epoch)
-        running_loss = 0.0
-        for step, (images, attr_targets, gt_masks) in enumerate(train_loader):
-            images = images.to(device, non_blocking=True)
-            attr_targets = attr_targets.to(device, non_blocking=True)
-            gt_masks = gt_masks.to(device, non_blocking=True)
-            
-            # Check head pose yaw angle heuristic in Phase 2
-            crop_aspect_ratio = images.shape[3] / float(images.shape[2] + 1e-5)
-            estimated_yaw = (crop_aspect_ratio - 1.0) * 45.0
-            if abs(estimated_yaw) > 20.0:
-                with torch.no_grad():
-                    images = frontalizer(images, yaw_angle=estimated_yaw)
-            
-            optimizer.zero_grad()
-            with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
-                attr_logits, occ_mask, _ = anet(images)
-                sam_mask = sam_segmentor(images)
-                loss_attr = criterion_bce(attr_logits, attr_targets)
-                
-            # BCELoss & WingLoss evaluated in float32 for numerical stability (clamped to prevent CUDA assertion failure)
-            loss_mask = criterion_mask(occ_mask.float().clamp(1e-7, 1.0 - 1e-7), gt_masks.float().clamp(0.0, 1.0))
-            gt_masks_full = F.interpolate(gt_masks.float(), size=images.shape[2:], mode='nearest').clamp(0.0, 1.0)
-            loss_sam = criterion_mask(sam_mask.float().clamp(1e-7, 1.0 - 1e-7), gt_masks_full)
-            loss_wing = criterion_wing(occ_mask.float(), gt_masks.float())
-            
-            # Multi-Task Joint Loss: Attributes (BCE) + Spatial Mask (BCE) + SAM Mask (BCE) + Landmark Alignment (WingLoss)
-            loss = loss_attr + 0.5 * loss_mask + 0.3 * loss_sam + 0.2 * loss_wing
-                
-            scaler.scale(loss).backward()
-            scaler.step(optimizer)
-            scaler.update()
-            running_loss += loss.item()
-            
-            if rank == 0 and (step % 50 == 0 or step == len(train_loader) - 1):
-                current_lr = scheduler.get_last_lr()[0] if hasattr(scheduler, 'get_last_lr') else 1e-3
-                print(f"ANet Epoch [{epoch}/{phase2_epochs}] - Step [{step}/{len(train_loader)}] - Loss: {loss.item():.4f} (Attr: {loss_attr.item():.4f}, Mask: {loss_mask.item():.4f}) | LR: {current_lr:.6f}", flush=True)
-            
-        scheduler.step()
+    optimizer = optim.Adam(anet.parameters(), lr=1e-3, weight_decay=1e-4)
+    criterion = nn.BCEWithLogitsLoss()
+    epochs = min(cfg.train.epochs, 10)
+    for epoch in range(1, epochs + 1):
+        anet.train()
+        running = 0.0
+        for images, targets in loader:
+            images, targets = images.to(device), targets.to(device)
+            optimizer.zero_grad(set_to_none=True)
+            logits, _, _ = anet(images)
+            loss = criterion(logits, targets)
+            loss.backward()
+            optimizer.step()
+            running += float(loss.detach().item())
         if rank == 0:
-            print(f"✓ ANet Epoch [{epoch}/{phase2_epochs}] Complete - Avg Loss: {running_loss / max(1, len(train_loader)):.4f}\n", flush=True)
-            if epoch % 10 == 0 or epoch == phase2_epochs:
-                anet_state = anet.module.state_dict() if hasattr(anet, 'module') else anet.state_dict()
-                periodic_path = os.path.join(cfg.train.checkpoint_dir, f"phase2_epoch_{epoch}.pt")
-                torch.save({'epoch': epoch, 'anet': anet_state}, periodic_path)
-                print(f"✓ Saved Phase 2 periodic checkpoint to: {periodic_path}\n", flush=True)
-        
+            print(f"Phase 2 epoch {epoch}/{epochs} loss={running / max(1, len(loader)):.5f}")
     if rank == 0:
-        ckpt_path = os.path.join(cfg.train.checkpoint_dir, "phase2_anet_attributes.pt")
-        anet_state = anet.module.state_dict() if hasattr(anet, 'module') else anet.state_dict()
-        torch.save({'anet': anet_state}, ckpt_path)
-        print(f"[Phase 2 Complete] ANet checkpoint saved to: {ckpt_path}")
+        os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
+        torch.save({"schema_version": 2, "kind": "attribute_parser", "epoch": epochs, "anet": anet.state_dict()}, os.path.join(cfg.train.checkpoint_dir, "phase2_anet_attributes.pt"))
     return anet
 
-def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_classes: int, device: torch.device, is_ddp: bool = False, rank: int = 0, local_rank: int = 0, world_size: int = 1):
-    """
-    Phase 3 Training: Semi-Supervised Unlabeled Face Clustering via GCN Sub-Graph Link Prediction.
-    Tackles unannotated wild face datasets (FMD, COVID faces, web crawls).
-    
-    1. Trains GCNLinkPredictor on sub-graph pairwise link probabilities using backpropagation (BCE loss).
-    2. Runs BFS connected-component clustering to pseudo-label unlabeled wild face embeddings.
-    3. Performs closed-loop joint semi-supervised fine-tuning of the backbone on pseudo-labeled + labeled data streams.
-    """
-    if rank == 0:
-        print(f"\n========================================================================")
-        print(f"--- Starting Phase 3: Semi-Supervised GCN Clustering (Unlabeled Faces) ---")
-        print(f"========================================================================\n")
-    
-    unlabeled_dataset = UnlabeledFaceDataset(root_dir=cfg.dataset.unlabeled_data_dir, is_train=True)
-    labeled_dataset = WildFaceDataset(root_dir=cfg.dataset.train_data_dir, is_train=True)
-    
-    if is_ddp:
-        sampler_unlabeled = DistributedSampler(unlabeled_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=cfg.train.batch_size, sampler=sampler_unlabeled, num_workers=cfg.dataset.num_workers)
-        sampler_labeled = DistributedSampler(labeled_dataset, num_replicas=world_size, rank=rank, shuffle=True)
-        labeled_loader = DataLoader(labeled_dataset, batch_size=cfg.train.batch_size, sampler=sampler_labeled, num_workers=cfg.dataset.num_workers)
-    else:
-        sampler_unlabeled, sampler_labeled = None, None
-        unlabeled_loader = DataLoader(unlabeled_dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.dataset.num_workers)
-        labeled_loader = DataLoader(labeled_dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.dataset.num_workers)
-    
-    gcn_predictor = GCNLinkPredictor(feature_dim=cfg.model.embedding_dim, hidden_dim=256, k_neighbors=5).to(device)
-    if is_ddp and device.type == 'cuda':
-        gcn_predictor = nn.parallel.DistributedDataParallel(gcn_predictor, device_ids=[local_rank], output_device=local_rank, find_unused_parameters=True)
-        
-    optimizer_gcn = optim.Adam(gcn_predictor.parameters(), lr=1e-3, weight_decay=1e-4)
-    scaler = GradScaler('cuda', enabled=cfg.model.fp16 and device.type == 'cuda')
-    
-    if rank == 0:
-        print(f"Phase 3 Dataset Streams initialized: {len(labeled_dataset)} labeled samples, {len(unlabeled_dataset)} unlabeled wild face images.")
-    
-    unwrapped_backbone = backbone.module if hasattr(backbone, 'module') else backbone
-    unwrapped_backbone.eval()
-    
-    # -------------------------------------------------------------------------
-    # Stage 3.1: Supervised Training of GCN Link Predictor on Sub-Graph Edges
-    # -------------------------------------------------------------------------
-    if rank == 0:
-        print(f"\n[Phase 3.1] Training GCN Link Predictor backbone with pairwise edge BCE backpropagation...")
-        
-    gcn_epochs = min(cfg.train.epochs, 5)
-    gcn_predictor.train()
-    for epoch in range(1, gcn_epochs + 1):
-        if sampler_labeled is not None:
-            sampler_labeled.set_epoch(epoch)
-        running_gcn_loss = 0.0
-        for step, batch in enumerate(labeled_loader):
-            images, labels, _ = batch
-            images, labels = images.to(device, non_blocking=True), labels.to(device, non_blocking=True)
-            
-            with torch.no_grad():
-                embeds = unwrapped_backbone(images)
-                
-            optimizer_gcn.zero_grad()
-            with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
-                loss_gcn, edge_probs = gcn_predictor(embeds, labels)
-                
-            scaler.scale(loss_gcn).backward()
-            scaler.step(optimizer_gcn)
-            scaler.update()
-            running_gcn_loss += loss_gcn.item()
-            
-        if rank == 0:
-            print(f"GCN Link Predictor Epoch [{epoch}/{gcn_epochs}] - Loss: {running_gcn_loss / max(1, len(labeled_loader)):.4f}")
 
-    # -------------------------------------------------------------------------
-    # Stage 3.2: BFS Graph Clustering & Semi-Supervised Joint Fine-Tuning
-    # -------------------------------------------------------------------------
-    if rank == 0:
-        print(f"\n[Phase 3.2] Clustering Unlabeled Wild Faces & Performing Joint Semi-Supervised Fine-Tuning...")
-        
-    unwrapped_gcn = gcn_predictor.module if hasattr(gcn_predictor, 'module') else gcn_predictor
-    unwrapped_gcn.eval()
-    
-    total_clustered = 0
-    pseudo_labeled_samples = []
-    
+class _CombinedIdentityDataset(Dataset):
+    """Path-backed labelled/pseudo-labelled stream for Phase 3."""
+
+    def __init__(self, samples, image_size):
+        self.samples = list(samples)
+        self.transform = get_default_transform(image_size, is_train=True)
+
+    def __len__(self):
+        return len(self.samples)
+
+    def __getitem__(self, index):
+        if index < 0 or index >= len(self.samples):
+            raise IndexError(index)
+        path, label, is_pseudo = self.samples[index]
+        try:
+            image = Image.open(path).convert("RGB")
+        except Exception as exc:
+            raise RuntimeError(f"Could not decode Phase 3 image {path}: {exc}") from exc
+        return self.transform(image), int(label), bool(is_pseudo)
+
+
+def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_classes: int, device: torch.device, **kwargs):
+    """Optional offline GCN adaptation over a globally indexed unlabeled stream."""
+    rank = kwargs.get("rank", 0)
+    if not cfg.dataset.unlabeled_data_dir:
+        if rank == 0:
+            print("Phase 3 skipped: no unlabeled_data_dir configured.")
+        return
+    dataset = UnlabeledFaceDataset(root_dir=cfg.dataset.unlabeled_data_dir, is_train=False, image_size=cfg.dataset.image_size)
+    loader = DataLoader(dataset, batch_size=cfg.train.batch_size, shuffle=False, num_workers=cfg.dataset.num_workers)
+    raw_backbone = backbone.module if hasattr(backbone, "module") else backbone
+    raw_backbone.eval()
+    embeddings = []
     with torch.no_grad():
-        for images, _, _ in unlabeled_loader:
-            images = images.to(device)
-            unlabeled_embeds = unwrapped_backbone(images)
-            pseudo_labels, active_mask = unwrapped_gcn.generate_pseudo_labels(
-                unlabeled_embeds,
-                confidence_threshold=cfg.loss.pseudo_label_threshold,
-                start_class_idx=num_labeled_classes
-            )
-            total_clustered += active_mask.sum().item()
-            
-            # Collect high-confidence pseudo-labeled images for joint retraining
-            active_indices = torch.where(active_mask)[0]
-            for idx in active_indices:
-                pseudo_labeled_samples.append((images[idx], pseudo_labels[idx].item()))
-                
-    if rank == 0:
-        print(f"✓ GCN BFS Graph Clustering Complete: Generated {total_clustered} high-confidence pseudo-labeled faces across unlabeled streams.")
+        for images, _, _ in loader:
+            embeddings.append(raw_backbone(images.to(device)).cpu())
+    all_embeddings = torch.cat(embeddings, dim=0)
+    predictor = GCNLinkPredictor(feature_dim=cfg.model.embedding_dim, hidden_dim=256, k_neighbors=5).to(device)
+    # Train the edge predictor on labelled identities before using it for
+    # clustering. The global path falls back to a blockwise graph for very
+    # large collections rather than constructing an N^2 hidden tensor.
+    labelled = WildFaceDataset(root_dir=cfg.dataset.train_data_dir, is_train=False, image_size=cfg.dataset.image_size)
+    labelled_loader = DataLoader(
+        labelled,
+        batch_size=cfg.train.batch_size,
+        shuffle=True,
+        num_workers=cfg.dataset.num_workers,
+        drop_last=True,
+    )
+    predictor.train()
+    predictor_optimizer = optim.Adam(predictor.parameters(), lr=1e-3, weight_decay=1e-4)
+    for _ in range(min(3, cfg.train.epochs)):
+        for images, labels, _ in labelled_loader:
+            if images.shape[0] < 2:
+                continue
+            with torch.no_grad():
+                labelled_embeddings = raw_backbone(images.to(device))
+            predictor_optimizer.zero_grad(set_to_none=True)
+            edge_loss, _ = predictor(labelled_embeddings, labels.to(device))
+            edge_loss.backward()
+            predictor_optimizer.step()
+    predictor.eval()
+    pseudo_labels, active = predictor.generate_global_pseudo_labels(
+        all_embeddings.to(device),
+        confidence_threshold=cfg.loss.pseudo_label_threshold,
+        start_class_idx=num_labeled_classes,
+    )
 
-    # Closed-Loop Joint Backbone Fine-Tuning on Pseudo-Labeled Samples
-    if len(pseudo_labeled_samples) > 0:
-        if rank == 0:
-            print(f"[Phase 3.3] Fine-tuning Backbone on Joint Labeled + {len(pseudo_labeled_samples)} Pseudo-Labeled Faces...")
-        
-        max_pseudo_class = max(lbl for _, lbl in pseudo_labeled_samples)
-        total_classes = max(num_labeled_classes, max_pseudo_class + 1)
-        
+    active_indices = torch.where(active.cpu())[0].tolist()
+    pseudo_samples = [
+        (dataset.samples[index], int(pseudo_labels[index].item()), True)
+        for index in active_indices
+        if dataset.samples[index] != "dummy_unlabeled"
+    ]
+    labelled_samples = [(path, label, False) for path, label in labelled.samples]
+    joint_dataset = _CombinedIdentityDataset(labelled_samples + pseudo_samples, cfg.dataset.image_size)
+    if len(joint_dataset) and pseudo_samples:
+        total_classes = max(num_labeled_classes, max(label for _, label, _ in pseudo_samples) + 1)
         joint_loss_fn = BroadFaceCurricularLoss(
             in_features=cfg.model.embedding_dim,
             num_classes=total_classes,
@@ -457,99 +334,99 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
             margin=cfg.loss.margin,
             alpha=cfg.loss.ema_alpha,
             queue_size=cfg.loss.queue_size,
-            compensate=True
+            compensate=True,
         ).to(device)
-        
-        optimizer_joint = optim.SGD(
-            list(backbone.parameters()) + list(joint_loss_fn.parameters()),
-            lr=1e-3, momentum=cfg.train.momentum, weight_decay=cfg.train.weight_decay
+        joint_optimizer = optim.SGD(
+            list(raw_backbone.parameters()) + list(joint_loss_fn.parameters()),
+            lr=cfg.train.learning_rate * 0.1,
+            momentum=cfg.train.momentum,
+            weight_decay=cfg.train.weight_decay,
         )
-        
-        backbone.train()
-        joint_epochs = min(cfg.train.epochs, 3)
-        for j_epoch in range(1, joint_epochs + 1):
-            running_j_loss = 0.0
-            # Joint mini-batch training
-            for i in range(0, len(pseudo_labeled_samples), cfg.train.batch_size):
-                batch_tuples = pseudo_labeled_samples[i:i + cfg.train.batch_size]
-                j_imgs = torch.stack([t[0] for t in batch_tuples]).to(device)
-                j_lbls = torch.tensor([t[1] for t in batch_tuples], device=device, dtype=torch.long)
-                
-                optimizer_joint.zero_grad()
-                with autocast('cuda', enabled=cfg.model.fp16 and device.type == 'cuda'):
-                    j_embeds = backbone(j_imgs)
-                    j_loss = joint_loss_fn(j_embeds, j_lbls)
-                    
-                scaler.scale(j_loss).backward()
-                scaler.step(optimizer_joint)
-                scaler.update()
-                running_j_loss += j_loss.item()
-                
-            if rank == 0:
-                print(f"Joint Retraining Epoch [{j_epoch}/{joint_epochs}] - BroadFace Curricular Loss: {running_j_loss / max(1, len(pseudo_labeled_samples) // cfg.train.batch_size):.4f}")
-
+        joint_loader = DataLoader(joint_dataset, batch_size=cfg.train.batch_size, shuffle=True, num_workers=cfg.dataset.num_workers)
+        raw_backbone.train()
+        for epoch in range(min(3, cfg.train.epochs)):
+            for images, labels, is_pseudo in joint_loader:
+                images, labels = images.to(device), labels.to(device)
+                joint_optimizer.zero_grad(set_to_none=True)
+                embeddings = raw_backbone(images)
+                labelled_mask = ~is_pseudo.bool()
+                pseudo_mask = is_pseudo.bool()
+                total_loss = embeddings.sum() * 0.0
+                if labelled_mask.any():
+                    total_loss = total_loss + joint_loss_fn(embeddings[labelled_mask], labels[labelled_mask])
+                if pseudo_mask.any():
+                    total_loss = total_loss + cfg.loss.lambda_semi * joint_loss_fn(embeddings[pseudo_mask], labels[pseudo_mask])
+                total_loss.backward()
+                joint_optimizer.step()
+                to_enqueue = embeddings.detach()
+                joint_loss_fn.enqueue(to_enqueue, labels)
+        raw_backbone.eval()
+    checkpoint_path = os.path.join(cfg.train.checkpoint_dir, "phase3_semi_gcn_predictor.pt")
     if rank == 0:
-        ckpt_path = os.path.join(cfg.train.checkpoint_dir, "phase3_semi_gcn_predictor.pt")
-        gcn_state = unwrapped_gcn.state_dict()
-        torch.save({'gcn_predictor': gcn_state}, ckpt_path)
-        print(f"\n[Phase 3 Complete] Saved trained GCN Link Predictor checkpoint to: {ckpt_path}")
+        os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
+        torch.save({
+            "schema_version": 2,
+            "kind": "gcn_adapter",
+            "gcn_predictor": predictor.state_dict(),
+            "pseudo_labels": pseudo_labels.cpu(),
+            "active_mask": active.cpu(),
+        }, checkpoint_path)
+        torch.save({
+            "schema_version": 2,
+            "kind": "recognition_backbone",
+            "backbone_state": raw_backbone.state_dict(),
+            "broadface_loss_fn": joint_loss_fn.state_dict() if pseudo_samples and len(joint_dataset) else None,
+            "epoch": min(3, cfg.train.epochs),
+        }, os.path.join(cfg.train.checkpoint_dir, "phase3_adapted_backbone.pt"))
+        print(f"Phase 3 generated {int(active.sum())} globally indexed pseudo-labelled samples; saved {checkpoint_path}")
 
 
 def main():
-    parser = argparse.ArgumentParser(description="OccuPose-BroadDictNet Commercial SOTA Multi-Stage Training Pipeline")
-    parser.add_argument("--data_dir", type=str, default="", help="Path to labeled training dataset (ROF, LFW, WIDER)")
-    parser.add_argument("--unlabeled_dir", type=str, default="", help="Path to unlabeled face dataset (FMD, COVID faces)")
-    parser.add_argument("--celeba_dir", type=str, default="", help="Path to CelebA attribute dataset")
-    parser.add_argument("--backbone", type=str, default="iresnet100", choices=["iresnet100", "vit_face_base"], help="Backbone type")
-    parser.add_argument("--checkpoint_dir", type=str, default="./checkpoints", help="Checkpoint directory")
-    parser.add_argument("--epochs", type=int, default=100, help="Epochs for Phase 1 backbone training (Commercial SOTA standard = 100)")
-    parser.add_argument("--batch_size", type=int, default=32, help="Batch size per GPU")
-    parser.add_argument("--lr", type=float, default=0.1, help="Learning rate")
-    parser.add_argument("--fp16", action="store_true", help="Enable AMP FP16")
-    parser.add_argument("--resume", action="store_true", help="Resume training from latest checkpoint if available")
-    parser.add_argument("--retrain_phase1", action="store_true", help="Force retraining Phase 1 backbone from Epoch 1 (ignore old Phase 1 checkpoint)")
-    parser.add_argument("--retrain_phase2", action="store_true", help="Force retraining Phase 2 ANet attribute parser (ignore old Phase 2 checkpoint)")
-    parser.add_argument("--retrain_all", action="store_true", help="Force retraining ALL phases (Phase 1, Phase 2, Phase 3) from scratch")
+    parser = argparse.ArgumentParser(description="OccuPose-BroadDictNet training")
+    parser.add_argument("--data_dir", default=None)
+    parser.add_argument("--unlabeled_dir", default=None)
+    parser.add_argument("--celeba_dir", default=None)
+    parser.add_argument("--backbone", choices=["iresnet100", "vit_face_base", "fasterrcnn_backbone"], default=None)
+    parser.add_argument("--checkpoint_dir", default=None)
+    parser.add_argument("--epochs", type=int, default=None)
+    parser.add_argument("--batch_size", type=int, default=None)
+    parser.add_argument("--lr", type=float, default=None)
+    parser.add_argument("--fp16", action="store_true")
+    parser.add_argument("--resume", action="store_true")
+    parser.add_argument("--retrain_phase1", action="store_true")
+    parser.add_argument("--retrain_phase2", action="store_true")
+    parser.add_argument("--retrain_all", action="store_true")
+    parser.add_argument("--allow_synthetic_fixtures", action="store_true")
     args = parser.parse_args()
-    
+
     is_ddp, rank, local_rank, world_size, device = setup_ddp()
-    
     cfg = SystemConfig()
-    if args.data_dir:
-        cfg.dataset.train_data_dir = args.data_dir
-    if args.unlabeled_dir:
-        cfg.dataset.unlabeled_data_dir = args.unlabeled_dir
-    if args.celeba_dir:
-        cfg.dataset.celeba_dir = args.celeba_dir
-    cfg.model.backbone_type = args.backbone
-    cfg.train.checkpoint_dir = args.checkpoint_dir
-    cfg.train.epochs = args.epochs
-    cfg.train.batch_size = args.batch_size
-    cfg.train.learning_rate = args.lr
-    cfg.model.fp16 = args.fp16 or (device.type == 'cuda')
-    
-    if rank == 0:
-        print(f"Running OccuPose-BroadDictNet Training Engine on: {device} (Backbone: {cfg.model.backbone_type}) | DDP: {is_ddp} (World Size: {world_size}) | Target Epochs: {cfg.train.epochs}")
-    
-    force_p1 = args.retrain_phase1 or args.retrain_all
-    force_p2 = args.retrain_phase2 or args.retrain_all
-    
-    # Phase 1: Train Backbone + CurricularFace + BroadFace
-    backbone, num_classes = train_phase1_backbone_curricular(cfg, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, resume=args.resume, force_retrain=force_p1)
-    
-    # Phase 2: Train ANet Attribute Parser
-    anet = train_phase2_anet_attributes(cfg, backbone, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size, force_retrain=force_p2)
-    
-    # Phase 3: Train GCN Semi-Supervised Link Predictor & Pseudo-Labeler on Unlabeled Faces
-    train_phase3_semi_supervised_gcn(cfg, backbone, num_classes, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank, world_size=world_size)
-    
-    if rank == 0:
-        print("\n========================================================================")
-        print("✓ OccuPose-BroadDictNet Commercial SOTA Multi-Stage Training Pipeline Complete!")
-        print("========================================================================")
-        
+    if args.data_dir is not None: cfg.dataset.train_data_dir = args.data_dir
+    if args.unlabeled_dir is not None: cfg.dataset.unlabeled_data_dir = args.unlabeled_dir
+    if args.celeba_dir is not None: cfg.dataset.celeba_dir = args.celeba_dir
+    if args.backbone is not None: cfg.model.backbone_type = args.backbone
+    if args.checkpoint_dir is not None: cfg.train.checkpoint_dir = args.checkpoint_dir
+    if args.epochs is not None: cfg.train.epochs = args.epochs
+    if args.batch_size is not None: cfg.train.batch_size = args.batch_size
+    if args.lr is not None: cfg.train.learning_rate = args.lr
+    cfg.model.fp16 = args.fp16 or (device.type == "cuda")
+    cfg.dataset.allow_synthetic_fixtures = args.allow_synthetic_fixtures
+    seed_everything(cfg.train.seed + rank)
+
+    backbone, num_classes = train_phase1_backbone_curricular(
+        cfg, device, is_ddp=is_ddp, rank=rank, local_rank=local_rank,
+        world_size=world_size, resume=args.resume, force_retrain=args.retrain_phase1 or args.retrain_all,
+    )
+    if cfg.dataset.celeba_dir:
+        train_phase2_anet_attributes(cfg, backbone, device, rank=rank, force_retrain=args.retrain_phase2 or args.retrain_all)
+    else:
+        if rank == 0:
+            print("Phase 2 skipped: no celeba_dir configured.")
+    if cfg.dataset.unlabeled_data_dir:
+        train_phase3_semi_supervised_gcn(cfg, backbone, num_classes, device, rank=rank)
     if is_ddp and dist.is_initialized():
         dist.destroy_process_group()
+
 
 if __name__ == "__main__":
     main()
