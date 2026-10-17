@@ -331,6 +331,134 @@ This section is the complete runtime flow for the current codebase. It separates
 the offline training artifacts from the online recognition path and identifies
 the main Python entry points involved at each stage.
 
+### 9.0 First-time-reader architecture map
+
+The repository is a **two-stage face system** rather than one network trained
+with one label tensor:
+
+1. **Detection** answers: *where are the faces?* The AQUA `bb_label` dataset
+   supplies bounding boxes for this stage.
+2. **Recognition** answers: *which enrolled person is this face?* The AQUA
+   `name_label` dataset supplies identity labels for this stage.
+
+The detector and recognition backbone are trained separately because a YOLO
+bounding-box class is not an identity class. The optional ANet, SAM, PIM, and
+GCN components are additional modules with their own checkpoints and are not
+silently enabled in a random state.
+
+```mermaid
+flowchart LR
+    %% ------------------------- OFFLINE TRAINING -------------------------
+    subgraph T["Offline training: train.py"]
+        BB["AQUA bb_label\nYOLO / Darknet boxes"]
+        BBD["BoundingBoxFaceDataset\nall boxes -> pixel xyxy\nforeground -> face class 1"]
+        DET["Torchvision Faster R-CNN\nclass-agnostic face detector"]
+        DETCKPT["face_detector.pt"]
+        BB --> BBD --> DET --> DETCKPT
+
+        ID["AQUA name_label\nidentity folders / face crops"]
+        IDD["NameLabeledFaceDataset\ncanonical identity labels"]
+        BACKBONE["IResNet-100, ViT-Face,\nor FasterRCNNBackbone\nnormalized 512-D embedding"]
+        LOSS["BroadFaceCurricularLoss\nCurricularFace margin +\ndetached memory/proxy queue"]
+        ID --> IDD --> BACKBONE --> LOSS
+        LOSS --> RECCKPT["recognition_backbone.pt\nlatest_backbone.pt"]
+
+        CELEBA["CelebA images +\nlist_attr_celeba annotations"]
+        ANET_T["ANetAttributeParser\n40 binary attributes +\nspatial occlusion head"]
+        CELEBA --> ANET_T --> ANETCKPT["phase2_anet_attributes.pt"]
+
+        UNLABELED["AQUA unlabeled/\nface crops"]
+        GCN_T["GCNLinkPredictor\nedge probabilities +\nglobal pseudo-label graph"]
+        ADAPT["labelled + pseudo-labelled\nsemi-supervised fine-tuning"]
+        UNLABELED --> GCN_T --> ADAPT --> GCNCKPT["phase3_semi_gcn_predictor.pt\nphase3_adapted_backbone.pt"]
+        RECCKPT --> ADAPT
+    end
+
+    %% -------------------------- ONLINE INFERENCE ------------------------
+    subgraph I["Online inference: OccuPoseBroadDictPipeline.forward"]
+        INPUT["image"] --> NORM["PIL load -> resize ->\nRGB tensor normalized to [-1, 1]"]
+        NORM --> DSELECT{"Trained detector\ncheckpoint available?"}
+        DET_INFER["TorchvisionFaceDetector\nloads face_detector.pt"]
+        EXT["SOTAFaceDetector\nYuNet and/or MTCNN"]
+        DSELECT -->|yes| DET_INFER
+        DSELECT -->|no| EXT
+        DET_INFER --> DET_OUT["boxes + scores\nzero landmarks for trained detector"]
+        EXT --> DET_OUT
+        DET_OUT --> SNMS["index-preserving\nGaussian Soft-NMS"]
+        SNMS --> EMPTY{"Any valid boxes?"}
+        EMPTY -->|no| NONE["return []\nno fabricated full-image face"]
+        EMPTY -->|yes| CROP["per-face crop\nclamp coordinates + reject tiny boxes"]
+        CROP --> ALIGN["five-point similarity alignment\nto 112x112\nbox-resize fallback if landmarks invalid"]
+        ALIGN --> SAM_SELECT{"SAM checkpoint\nloaded?"}
+        SAM["SAMFaceSegmentor\nsoft foreground mask\nresidual blend: 0.35 + 0.65 * mask"]
+        SAM_SELECT -->|yes| SAM --> POSE
+        SAM_SELECT -->|no| POSE
+        POSE["landmark-derived pose\nyaw / pitch / roll quality signal"]
+        POSE --> PIM_SELECT{"PIM/D2SC frontalizer\nloaded and pose gate exceeded?"}
+        PIM["PIMFrontalizationGAN\noptional pose-conditioned restoration"]
+        PIM_SELECT -->|yes| PIM --> EMBED
+        PIM_SELECT -->|no| EMBED
+        EMBED["configured recognition backbone\nL2-normalized embedding f"]
+
+        CROP --> ANET_SELECT{"ANet checkpoint\nloaded?"}
+        ANET["ANetAttributeParser\n40 attributes + occlusion flag\nside output, not identity labels"]
+        ANET_SELECT -->|yes| ANET --> OUTPUT
+        ANET_SELECT -->|no| OUTPUT
+
+        EMBED --> DDRC["DDRCClassifier / LISTASparseSolver\nenrolled dictionary atoms\nsparse coefficients x + error e"]
+        DDRC --> GATE["class residuals + margin\nunknown thresholds"]
+        GATE --> OUTPUT["per-face result:\nbox, identity/unknown, scores,\npose, attributes, alignment state"]
+    end
+
+    DETCKPT -. "loaded by" .-> DET_INFER
+    RECCKPT -. "loaded by" .-> EMBED
+    ANETCKPT -. "loaded by" .-> ANET
+    GCNCKPT -. "optional adapted backbone state" .-> EMBED
+```
+
+#### How to read the diagram
+
+* **Solid arrows** are the normal data path. **Dotted arrows** represent
+  checkpoint loading or optional state; they do not mean that the module is
+  always active.
+* The detector produces a variable number of face boxes. The rest of the
+  pipeline runs once per valid box, so one image can produce zero, one, or many
+  result records.
+* The recognition backbone produces an embedding, not a final name. A name is
+  assigned only after `enroll_dataset()` has built the DDRC gallery.
+* ANet attributes are a side output. They can report attributes and an
+  occlusion-quality flag, but they do not replace the identity embedding or
+  create identity labels.
+* SAM is a foreground-preprocessing module. PIM/D2SC is a pose-gated
+  restoration/frontalization module. Neither is enabled merely because its
+  Python class exists.
+* Phase 3's adapted backbone can be used as the recognition backbone. The GCN
+  predictor is checkpointed and loaded for the adaptation artifact, but the
+  current per-image `forward()` path does not run a new graph or assign a GCN
+  identity at inference time.
+* If a detector returns no boxes, the output is `[]`. If there is no gallery,
+  detected faces remain `unknown`; the system never invents a face or a person.
+
+#### Component map: what each named model does
+
+| Component | Code | Input | Output / purpose | Default state |
+|---|---|---|---|---|
+| AQUA detector | `TorchvisionFaceDetector` in `models/detector.py` | Full image and YOLO-derived boxes during training | Face boxes and confidence scores | Trained in Phase 0 when `--bb_dir` is supplied |
+| External detector fallback | `SOTAFaceDetector` | Full normalized image | YuNet/MTCNN boxes, scores, and five landmarks | Used when no trained detector checkpoint is loaded |
+| Soft-NMS | `soft_nms_pytorch()` | Candidate boxes, scores, landmarks | De-duplicated boxes while preserving row alignment | Always applied to detector output |
+| Alignment | `pipeline/alignment.py` | Face crop and five landmarks | Canonical 112x112 crop | Landmark similarity transform, or box-resize fallback |
+| IResNet / ViT-Face | `models/backbone.py` | Aligned 112x112 crop | L2-normalized 512-D embedding | Recognition model selected by `ModelConfig.backbone_type` |
+| CurricularFace + BroadFace queue | `losses/` | Embeddings and identity labels | Training loss and detached historical feature/proxy memory | Phase 1 training only; not used as the gallery |
+| ANet | `models/anet_attribute.py` | Resized face crop and optional landmarks | 40 attribute logits, spatial attention mask, occlusion flag | Optional Phase 2 checkpoint |
+| SAM-style segmentor | `models/sam_segmentor.py` | Aligned crop plus detector box prompt | Soft foreground mask | Optional and checkpoint-gated |
+| PIM/D2SC frontalizer | `models/pim_frontalizer.py` | Aligned crop and pose signal | Restored/frontalized crop | Optional and only used beyond the pose gate |
+| DDRC/LISTA | `models/ddrc_solver.py` | Query embedding and enrolled gallery | Sparse identity coefficients, residuals, unknown decision | Required for open-set identity classification |
+| GCN adapter | `models/gcn_cluster.py` | Labelled/unlabeled embeddings | Edge probabilities and globally indexed pseudo-labels | Optional Phase 3 adaptation |
+
+The important separation is **detector labels → boxes**, **identity labels →
+embeddings**, and **gallery names → final identities**. No component should
+be described as doing all three jobs.
+
 ### 9.1 Training entry point and initialization
 
 The training command is:
@@ -472,7 +600,7 @@ or PIM without separate annotated data and training routines.
 When an attribute checkpoint is loaded for inference:
 
 ```text
-aligned crop + detector landmarks
+resized per-face crop + optional local landmarks
   -> landmark-aware ANet local branch
   -> 40 attribute logits
   -> optional occlusion-quality indicator
@@ -514,6 +642,17 @@ The adapted backbone is saved separately so the original supervised checkpoint
 remains reproducible.
 
 ### 9.5 Checkpoint loading before inference
+
+The detector artifact is loaded first when present:
+
+```text
+face_detector.pt
+  -> TorchvisionFaceDetector
+  -> class-agnostic AQUA face boxes
+
+no face_detector.pt
+  -> configured YuNet/MTCNN external detector fallback
+```
 
 `OccuPoseBroadDictPipeline.load_pretrained_weights()` searches for the newest
 compatible backbone artifact in this order:
@@ -582,9 +721,10 @@ Inside `forward()`:
 ```text
 1. Detector
    image tensor
-     -> YuNet and/or MTCNN
-     -> candidate boxes, scores, five-point landmarks
-     -> index-preserving Gaussian Soft-NMS
+      -> trained AQUA Faster R-CNN, or YuNet and/or MTCNN fallback
+      -> candidate boxes and scores
+      -> five-point landmarks when the external backend provides them
+      -> index-preserving Gaussian Soft-NMS
 
 2. Empty-detection gate
    no boxes -> return []
@@ -604,11 +744,12 @@ Inside `forward()`:
      -> aligned quality flag
 
 5. Optional preprocessing
-   aligned crop
-     -> checkpointed soft foreground mask, if enabled
-     -> landmark-aware attributes, if available
-     -> landmark-derived yaw/pitch/roll quality signal
-     -> checkpointed frontalizer only when the pose gate is exceeded
+    aligned crop
+      -> checkpointed soft foreground mask, if enabled
+      -> landmark-derived yaw/pitch/roll quality signal
+      -> checkpointed frontalizer only when the pose gate is exceeded
+    resized per-face crop
+      -> landmark-aware ANet attributes and occlusion flag, if available
 
 6. Recognition embedding
    processed 112x112 crop
@@ -701,6 +842,7 @@ evaluation metrics
 The following files are the principal artifacts:
 
 ```text
+checkpoints/face_detector.pt
 checkpoints/recognition_backbone.pt
 checkpoints/latest_backbone.pt
 checkpoints/phase2_anet_attributes.pt
