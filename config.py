@@ -5,13 +5,16 @@ from typing import Tuple
 class DatasetConfig:
     train_data_dir: str = "" # Identity-labelled, face-crop dataset
     bb_data_dir: str = "" # YOLO/Darknet face detection dataset (AQUA bb_label)
-    unlabeled_data_dir: str = "" # Optional unlabeled face-crop dataset
+    unlabeled_data_dir: str = "" # Optional unlabeled crops/scenes; special WIDER auto-discovered
     val_data_dir: str = ""
     celeba_dir: str = ""
     image_size: Tuple[int, int] = (112, 112)
     num_classes: int = 0 # Derived from the labelled manifest; never silently guessed
     num_workers: int = 4
     allow_synthetic_fixtures: bool = False
+    unlabeled_mode: str = "detected_scenes" # detected_scenes or face_crops
+    unlabeled_score_threshold: float = 0.75
+    wider_identity_data_dir: str = "" # Optional nested WIDER folder-label crops
 
 @dataclass
 class ModelConfig:
@@ -20,6 +23,7 @@ class ModelConfig:
     fp16: bool = True
     detector_backend: str = "auto" # auto, yunet, mtcnn, none
     detector_score_threshold: float = 0.40
+    recognition_alignment: str = "resize" # resize or landmarks
     use_foreground_mask: bool = False
     use_pim_frontalizer: bool = False
     use_anet_attributes: bool = False
@@ -56,6 +60,9 @@ class TrainConfig:
     detector_batch_size: int = 2
     detector_learning_rate: float = 0.005
     detector_pretrained_backbone: bool = True
+    detector_min_size: int = 800
+    detector_max_size: int = 1333
+    detector_split: str = "all" # all, or train for a held-out evaluation split
 
 @dataclass
 class SystemConfig:

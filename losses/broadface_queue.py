@@ -27,6 +27,7 @@ class BroadFaceCurricularLoss(nn.Module):
         queue_size: int = 10000,
         compensate: bool = True,
         feature_dim: int = None,
+        sync_curriculum: bool = True,
     ):
         super().__init__()
         if feature_dim is not None:
@@ -42,6 +43,7 @@ class BroadFaceCurricularLoss(nn.Module):
         self.alpha = float(alpha)
         self.queue_size = int(queue_size)
         self.compensate = bool(compensate)
+        self.sync_curriculum = bool(sync_curriculum)
 
         self.weight = nn.Parameter(torch.empty(self.num_classes, self.in_features))
         nn.init.xavier_uniform_(self.weight)
@@ -91,7 +93,7 @@ class BroadFaceCurricularLoss(nn.Module):
         if self.training and update_curriculum and cos_yi.numel():
             with torch.no_grad():
                 mean_cos = cos_yi.mean()
-                if dist.is_available() and dist.is_initialized():
+                if self.sync_curriculum and dist.is_available() and dist.is_initialized():
                     dist.all_reduce(mean_cos, op=dist.ReduceOp.SUM)
                     mean_cos /= dist.get_world_size()
                 self.t.mul_(self.alpha).add_((1.0 - self.alpha) * mean_cos)

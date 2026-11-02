@@ -16,9 +16,12 @@
 # =====================================================================
 
 cd $PBS_O_WORKDIR || cd $HOME/Face_Detection_In_Wild
+export PYTHONPATH="$HOME/Face_Detection_In_Wild/.python_deps:${PYTHONPATH:-}"
 
 # Enable unbuffered Python logging & IPv4-only NCCL/GLOO environment settings
 export PYTHONUNBUFFERED=1
+export PYTHONIOENCODING=UTF-8
+export AQUA_TRAIN_DETECTOR_BACKEND=anchor_free
 export PYTHONWARNINGS="ignore"
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
@@ -27,7 +30,11 @@ export GLOO_SOCKET_FAMILY=AF_INET
 export GLOO_SOCKET_IFNAME=ib0,eth0,ens,enp
 export NCCL_SOCKET_IFNAME=ib0,eth0,ens,enp
 export NCCL_IB_DISABLE=0
-export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:${LD_LIBRARY_PATH:-}
+if ! command -v stdbuf >/dev/null 2>&1; then
+    echo "ERROR: stdbuf is required for live logs" >&2
+    exit 1
+fi
 
 mkdir -p $HOME/Face_Detection_In_Wild/weights
 
@@ -56,7 +63,8 @@ export MASTER_ADDR=$MASTER_ADDR
 export MASTER_PORT=$MASTER_PORT
 export NNODES=$NNODES
 
-# Launch multi-node 4-GPU PyTorch DDP via pbsdsh with explicit IPv4 master IP
-pbsdsh -v $HOME/Face_Detection_In_Wild/run_node_ddp_occupose.sh "$PBS_NODEFILE" "$MASTER_ADDR" "$MASTER_PORT" "$NNODES" 2>&1 | tee -a "$HOME/Face_Detection_In_Wild/train_aqua_live.log"
+# Launch one DDP torchrun process per allocated host. The PBS nodefile can
+# contain repeated entries for multiple GPUs, so -c prevents duplicate launches.
+stdbuf -oL -eL pbsdsh -c -v $HOME/Face_Detection_In_Wild/run_node_ddp_occupose.sh "$PBS_NODEFILE" "$MASTER_ADDR" "$MASTER_PORT" "$NNODES" 2>&1 | stdbuf -oL -eL tee -a "$HOME/Face_Detection_In_Wild/train_aqua_live.log"
 
 echo "Training job completed at $(date)"

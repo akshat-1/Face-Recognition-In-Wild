@@ -5,13 +5,13 @@ modules are not implicitly inserted into identity training.
 
 ```mermaid
 flowchart TD
-    Main[python train.py] --> Config[SystemConfig + explicit data paths]
+    Main[python train.py --phase all] --> Config[SystemConfig + explicit data paths]
     Config --> Phase0{bb_label configured?}
     Phase0 -- yes --> DetectorData[YOLO/Darknet BoundingBoxFaceDataset]
     DetectorData --> Detector[Faster R-CNN face detector]
     Detector --> DetectorCkpt[face_detector.pt]
     Phase0 -- no --> Skip0[Phase 0 skipped explicitly]
-    Config --> Phase1[Phase 1: labelled identity crops]
+    Config --> Phase1[Phase 1: name_label + nested WIDER folder crops]
     Phase1 --> Backbone[ IResNet-100 / generic ViT ]
     Backbone --> Loss[Curricular margin + detached memory queue]
     Loss --> Step[optimizer step, then queue enqueue]
@@ -36,18 +36,40 @@ flowchart TD
 `train_phase0_face_detector()` loads the configured AQUA `bb_label` directory.
 YOLO rows are converted to pixel-space torchvision targets, all foreground
 classes are mapped to the common `face` class, and a class-agnostic Faster
-R-CNN is optimized with the real boxes. If an explicit `train` directory is
-present, that split plus unsplit AQUA layouts are used; explicit test/validation
-folders are excluded. Otherwise the available labelled layout is scanned. The
-completed `face_detector.pt` checkpoint is reused on later runs
+R-CNN is optimized with the real boxes. The full-model default is
+`detector_split=all`, so explicit `train`, `test`, and `validate` folders plus
+unsplit AQUA layouts are all used. Set `detector_split=train` to preserve a
+held-out evaluation split. The completed `face_detector.pt` checkpoint is reused on later runs
 unless `--retrain_all` is supplied.
 
 This phase trains localization. It does not turn detection boxes into identity
 classes; identity recognition remains the separate `name_label` Phase 1.
 
+The nested AQUA WIDER source is a deliberate exception requested for this
+project. Its parallel YOLO files still provide detector boxes, while each valid
+box is cropped for recognition and receives the cleaned text of its containing
+folder (`0--Parade` becomes `Parade`). This creates generic folder labels, not
+verified person identities; the same folder label is applied to every crop from
+that folder.
+
+The special WIDER images are removed from the generic unlabeled-scene scan
+after this conversion, preventing the same samples from entering both the
+folder-labelled and pseudo-labelled paths.
+
+The phases can be run independently:
+
+```text
+--phase detector    bb_label -> face_detector.pt
+--phase recognition name_label -> recognition_backbone.pt
+--phase adapt       recognition checkpoint + unlabeled crops/scenes -> adapted backbone
+--phase all         runs whichever configured stages have valid inputs
+```
+
 ## Phase 1
 
-`train_phase1_backbone_curricular()` loads `NameLabeledFaceDataset` and fails
+`train_phase1_backbone_curricular()` loads `NameLabeledFaceDataset` and, when
+the nested special dataset is available, `WiderFolderLabeledFaceDataset` as
+well. It fails
 if the path is missing or empty. It does not instantiate a detector, random
 SAM mask, or random frontalizer. The images are expected to be identity-
 labelled face crops and are normalized by the shared dataset transform.
@@ -74,7 +96,11 @@ directory is supplied.
 
 ## Phase 3
 
-The optional graph phase extracts embeddings for the complete unlabeled stream,
+The optional graph phase accepts either an explicit face-crop stream or full
+scenes. Full scenes are passed through the trained detector first, and only
+high-confidence face crops are embedded. Detector boxes are preprocessing
+metadata, never identity or ground-truth box labels. The graph phase extracts
+embeddings for the complete resulting stream,
 trains the edge predictor from labelled identity pairs, and generates pseudo
 labels with globally unique IDs. Small graphs use the learned edge head; large
 graphs use the blockwise nonnegative graph path to avoid an `N x N x hidden`

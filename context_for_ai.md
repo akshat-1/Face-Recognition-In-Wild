@@ -19,10 +19,21 @@ Training is task-separated:
    boxes and saves `face_detector.pt`.
 2. Phase 1 trains an identity backbone on real labelled face crops with
    CurricularFace and an explicit BroadFace-style detached memory queue.
+   The nested AQUA WIDER mask dataset additionally contributes YOLO-box face
+   crops labelled by cleaned folder text (for example, `0--Parade` -> `Parade`).
 3. Phase 2 is optional and trains the 40 CelebA attribute logits only on real
    CelebA annotations.
 4. Phase 3 is optional and performs globally indexed unlabeled graph
    adaptation, then saves the adapted backbone.
+
+Run the stages independently when the datasets are stored separately:
+
+```text
+python train.py --phase detector --bb_dir <bb_label> --checkpoint_dir <dir>
+python train.py --phase recognition --data_dir <name_label> --checkpoint_dir <dir>
+python train.py --phase adapt --data_dir <name_label> --unlabeled_dir <dir> \
+    --checkpoint_dir <dir> --unlabeled_mode detected_scenes
+```
 
 ## Non-negotiable safety rules
 

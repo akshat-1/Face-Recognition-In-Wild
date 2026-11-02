@@ -10,6 +10,7 @@ from typing import Optional
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 
 try:
     import cv2
@@ -237,6 +238,136 @@ class SOTAFaceDetector(nn.Module):
         return boxes, scores, landmarks[keep]
 
 
+class AnchorFreeFaceDetector(nn.Module):
+    """Small pure-PyTorch detector used when torchvision is unavailable.
+
+    It predicts one face box per feature-map cell. This keeps AQUA training
+    reproducible on nodes where the optional torchvision C++/CUDA extension is
+    not importable; it uses only torch, PIL-loaded tensors, and YOLO targets.
+    """
+
+    def __init__(self, channels: int = 128):
+        super().__init__()
+        self.backbone = nn.Sequential(
+            nn.Conv2d(3, 32, 3, stride=2, padding=1),
+            nn.BatchNorm2d(32),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(32, 64, 3, stride=2, padding=1),
+            nn.BatchNorm2d(64),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(64, channels, 3, stride=2, padding=1),
+            nn.BatchNorm2d(channels),
+            nn.SiLU(inplace=True),
+        )
+        self.objectness = nn.Conv2d(channels, 1, 1)
+        self.box_regression = nn.Conv2d(channels, 4, 1)
+
+    def _heads(self, image):
+        features = self.backbone(image.unsqueeze(0))
+        return self.objectness(features), self.box_regression(features)
+
+    @staticmethod
+    def _target_grid(target, height, width, grid_height, grid_width, device):
+        objectness = torch.zeros((1, 1, grid_height, grid_width), device=device)
+        boxes = torch.zeros((1, 4, grid_height, grid_width), device=device)
+        areas = torch.zeros((grid_height, grid_width), device=device)
+        for box in target.get("boxes", torch.empty((0, 4), device=device)):
+            x1, y1, x2, y2 = box.float()
+            if x2 <= x1 or y2 <= y1:
+                continue
+            center_x = ((x1 + x2) * 0.5 / max(float(width), 1.0)).clamp(0.0, 0.999999)
+            center_y = ((y1 + y2) * 0.5 / max(float(height), 1.0)).clamp(0.0, 0.999999)
+            grid_x = min(grid_width - 1, int((center_x * grid_width).item()))
+            grid_y = min(grid_height - 1, int((center_y * grid_height).item()))
+            area = ((x2 - x1) * (y2 - y1)).clamp_min(0.0)
+            if area <= areas[grid_y, grid_x]:
+                continue
+            areas[grid_y, grid_x] = area
+            objectness[0, 0, grid_y, grid_x] = 1.0
+            boxes[0, :, grid_y, grid_x] = torch.stack([
+                center_x,
+                center_y,
+                ((x2 - x1) / max(float(width), 1.0)).clamp(0.0, 1.0),
+                ((y2 - y1) / max(float(height), 1.0)).clamp(0.0, 1.0),
+            ])
+        return objectness, boxes
+
+    def loss(self, images, targets):
+        losses = {"loss_objectness": [], "loss_box_reg": []}
+        for image, target in zip(images, targets):
+            objectness_logits, box_logits = self._heads(image)
+            _, height, width = image.shape
+            grid_height, grid_width = objectness_logits.shape[-2:]
+            objectness_target, box_target = self._target_grid(
+                target, height, width, grid_height, grid_width, image.device
+            )
+            positive = objectness_target.bool().expand_as(box_target)
+            # The face cells are sparse, so a modest positive weighting keeps
+            # the detector from learning an all-background solution.
+            objectness_loss = F.binary_cross_entropy_with_logits(
+                objectness_logits,
+                objectness_target,
+                pos_weight=torch.tensor(4.0, device=image.device),
+            )
+            predicted_boxes = torch.sigmoid(box_logits)
+            if positive.any():
+                box_loss = F.smooth_l1_loss(predicted_boxes[positive], box_target[positive])
+            else:
+                box_loss = box_logits.sum() * 0.0
+            losses["loss_objectness"].append(objectness_loss)
+            losses["loss_box_reg"].append(box_loss)
+        return {name: torch.stack(values).mean() for name, values in losses.items()}
+
+    def forward(self, images, targets=None):
+        """Support both ordinary inference and DDP's module forward path."""
+        if isinstance(images, (list, tuple)):
+            if targets is not None:
+                return self.loss(images, targets)
+            return [self.predict(image) for image in images]
+        if targets is not None:
+            return self.loss([images], [targets])
+        return self.predict(images)
+
+    @torch.no_grad()
+    def predict(self, image, score_threshold=0.4, max_detections=200):
+        objectness_logits, box_logits = self._heads(image)
+        _, height, width = image.shape
+        grid_height, grid_width = objectness_logits.shape[-2:]
+        scores = torch.sigmoid(objectness_logits[0, 0]).flatten()
+        count = min(max_detections, scores.numel())
+        scores, indices = torch.topk(scores, count)
+        keep = scores >= float(score_threshold)
+        if not keep.any():
+            return _empty_detection(image.device)
+        scores = scores[keep]
+        indices = indices[keep]
+        grid_y = torch.div(indices, grid_width, rounding_mode="floor")
+        grid_x = indices % grid_width
+        values = torch.sigmoid(box_logits[0, :, grid_y, grid_x]).T
+        center_x, center_y, box_width, box_height = values.unbind(dim=1)
+        center_x = center_x * float(width)
+        center_y = center_y * float(height)
+        box_width = box_width * float(width)
+        box_height = box_height * float(height)
+        boxes = torch.stack([
+            center_x - box_width * 0.5,
+            center_y - box_height * 0.5,
+            center_x + box_width * 0.5,
+            center_y + box_height * 0.5,
+        ], dim=1)
+        boxes[:, 0::2].clamp_(0.0, float(width))
+        boxes[:, 1::2].clamp_(0.0, float(height))
+        valid = (boxes[:, 2] - boxes[:, 0] >= 4.0) & (boxes[:, 3] - boxes[:, 1] >= 4.0)
+        if not valid.any():
+            return _empty_detection(image.device)
+        boxes, scores = boxes[valid], scores[valid]
+        boxes, scores, keep_indices = soft_nms_pytorch(
+            boxes, scores, score_threshold=score_threshold, return_indices=True
+        )
+        landmarks = torch.zeros((boxes.shape[0], 5, 2), device=image.device, dtype=boxes.dtype)
+        return boxes, scores, landmarks
+
+
 class TorchvisionFaceDetector(nn.Module):
     """Trainable class-agnostic Faster R-CNN backed by AQUA YOLO boxes.
 
@@ -248,30 +379,78 @@ class TorchvisionFaceDetector(nn.Module):
     """
 
     def __init__(self, num_classes: int = 2, checkpoint_path: Optional[str] = None,
-                 pretrained_backbone: bool = True):
+                 pretrained_backbone: bool = True, backend: Optional[str] = None,
+                 detector_min_size: int = 800, detector_max_size: int = 1333):
         super().__init__()
-        try:
-            from torchvision.models.detection import (
-                FasterRCNN_ResNet50_FPN_Weights,
-                fasterrcnn_resnet50_fpn,
-            )
-            from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
-        except Exception as exc:
-            raise ImportError("Torchvision Faster R-CNN is required for bb_label detector training") from exc
-
-        # A complete detector checkpoint already contains the backbone. Avoid
-        # a needless COCO download when reconstructing that artifact offline.
-        weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT if pretrained_backbone and not checkpoint_path else None
-        try:
-            model = fasterrcnn_resnet50_fpn(weights=weights, weights_backbone=None)
-        except Exception:
-            # Offline AQUA jobs may not have the COCO checkpoint cached. A
-            # randomly initialized detector is still trainable from bb_label;
-            # the training log records that this fallback was selected.
-            model = fasterrcnn_resnet50_fpn(weights=None, weights_backbone=None)
-        in_features = model.roi_heads.box_predictor.cls_score.in_features
-        model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
-        self.model = model
+        checkpoint = None
+        if checkpoint_path and os.path.isfile(checkpoint_path):
+            checkpoint = torch.load(checkpoint_path, map_location="cpu")
+        requested_backend = backend or os.environ.get("AQUA_TRAIN_DETECTOR_BACKEND", "auto")
+        if checkpoint and checkpoint.get("backend"):
+            requested_backend = checkpoint["backend"]
+        self.backend = requested_backend
+        self.architecture = "aqua_anchor_free"
+        self.model = None
+        if requested_backend not in {"auto", "torchvision", "anchor_free", "aqua_anchor_free"}:
+            raise ValueError(f"Unknown training detector backend: {requested_backend}")
+        if requested_backend in {"anchor_free", "aqua_anchor_free"}:
+            self.backend = "anchor_free"
+            self.architecture = "aqua_anchor_free"
+            self.model = AnchorFreeFaceDetector()
+        else:
+            try:
+                from torchvision.models.detection import (
+                    FasterRCNN_ResNet50_FPN_Weights,
+                    fasterrcnn_resnet50_fpn,
+                )
+                from torchvision.models.detection.faster_rcnn import FastRCNNPredictor
+                from torchvision.models.detection.rpn import AnchorGenerator
+                if detector_min_size <= 0 or detector_max_size < detector_min_size:
+                    raise ValueError("detector_max_size must be >= detector_min_size > 0")
+                # WIDER-style face boxes are often smaller than generic COCO
+                # objects, so use smaller RPN anchors across the five FPN levels.
+                anchor_generator = AnchorGenerator(
+                    sizes=((16,), (32,), (64,), (128,), (256,)),
+                    aspect_ratios=((0.5, 1.0, 2.0),) * 5,
+                )
+                weights = FasterRCNN_ResNet50_FPN_Weights.DEFAULT if pretrained_backbone and not checkpoint_path else None
+                try:
+                    model = fasterrcnn_resnet50_fpn(
+                        weights=weights,
+                        weights_backbone=None,
+                        min_size=detector_min_size,
+                        max_size=detector_max_size,
+                        rpn_anchor_generator=anchor_generator,
+                        rpn_pre_nms_top_n_train=2000,
+                        rpn_post_nms_top_n_train=1000,
+                        rpn_pre_nms_top_n_test=1000,
+                        rpn_post_nms_top_n_test=300,
+                    )
+                except Exception:
+                    # Keep the requested architecture if the COCO weights are
+                    # unavailable on an offline node.
+                    model = fasterrcnn_resnet50_fpn(
+                        weights=None,
+                        weights_backbone=None,
+                        min_size=detector_min_size,
+                        max_size=detector_max_size,
+                        rpn_anchor_generator=anchor_generator,
+                        rpn_pre_nms_top_n_train=2000,
+                        rpn_post_nms_top_n_train=1000,
+                        rpn_pre_nms_top_n_test=1000,
+                        rpn_post_nms_top_n_test=300,
+                    )
+                in_features = model.roi_heads.box_predictor.cls_score.in_features
+                model.roi_heads.box_predictor = FastRCNNPredictor(in_features, num_classes)
+                self.model = model
+                self.backend = "torchvision"
+                self.architecture = "fasterrcnn_resnet50_fpn"
+            except Exception as exc:
+                if requested_backend == "torchvision":
+                    raise ImportError("Requested torchvision detector is unavailable") from exc
+                self.backend = "anchor_free"
+                self.architecture = "aqua_anchor_free"
+                self.model = AnchorFreeFaceDetector()
         self.num_classes = num_classes
         self.loaded_checkpoint = False
         if checkpoint_path:
@@ -281,7 +460,9 @@ class TorchvisionFaceDetector(nn.Module):
         if not os.path.isfile(checkpoint_path):
             raise FileNotFoundError(f"Face detector checkpoint not found: {checkpoint_path}")
         checkpoint = torch.load(checkpoint_path, map_location="cpu")
-        if checkpoint.get("kind") not in (None, "face_detector"):
+        if checkpoint.get("schema_version") != 2:
+            raise ValueError(f"Unsupported face detector checkpoint schema: {checkpoint_path}")
+        if checkpoint.get("kind") != "face_detector":
             raise ValueError(f"Not a face detector checkpoint: {checkpoint_path}")
         saved_classes = int(checkpoint.get("num_classes", self.num_classes))
         if saved_classes != self.num_classes:
@@ -295,6 +476,11 @@ class TorchvisionFaceDetector(nn.Module):
     def detection_loss(self, images, targets):
         """Return torchvision's training loss dictionary."""
         self.model.train()
+        if self.backend == "anchor_free":
+            # Call through DDP rather than reaching into ``.module``. DDP
+            # registers gradient hooks around its forward call; bypassing it
+            # would run the loss but silently skip cross-GPU synchronization.
+            return self.model(images, targets)
         return self.model(images, targets)
 
     @torch.no_grad()
@@ -302,6 +488,9 @@ class TorchvisionFaceDetector(nn.Module):
         if img_tensor.ndim != 4 or img_tensor.shape[0] != 1 or img_tensor.shape[1] != 3:
             raise ValueError("detector input must have shape (1,3,H,W)")
         device = img_tensor.device
+        if self.backend == "anchor_free":
+            self.model.eval()
+            return self.model.predict(img_tensor[0], score_threshold=score_threshold)
         _, _, height, width = img_tensor.shape
         image = ((img_tensor[0] + 1.0) / 2.0).clamp(0.0, 1.0)
         self.model.eval()

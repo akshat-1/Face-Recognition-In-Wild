@@ -34,6 +34,7 @@ class OccuPoseBroadDictPipeline(nn.Module):
         detector_backend: str = "auto",
         detector_weights_dir: str = "./weights",
         detector_checkpoint: Optional[str] = None,
+        recognition_alignment: str = "resize",
         pose_gate_degrees: float = 35.0,
         use_frontalizer: bool = False,
         use_attributes: bool = False,
@@ -42,6 +43,9 @@ class OccuPoseBroadDictPipeline(nn.Module):
     ):
         super().__init__()
         self.feature_dim = feature_dim
+        if recognition_alignment not in {"resize", "landmarks"}:
+            raise ValueError("recognition_alignment must be 'resize' or 'landmarks'")
+        self.recognition_alignment = recognition_alignment
         self.pose_gate_degrees = float(pose_gate_degrees)
         self.use_frontalizer = bool(use_frontalizer)
         self.use_attributes = bool(use_attributes)
@@ -98,8 +102,16 @@ class OccuPoseBroadDictPipeline(nn.Module):
             device = next(self.parameters()).device
         self.to(device)
         loaded = False
-        detector_path = os.path.join(checkpoint_dir, "face_detector.pt")
-        if os.path.isfile(detector_path) and hasattr(self.detector, "load_trained_checkpoint"):
+        # Phase 0 artifacts may live directly in checkpoint_dir or nested in
+        # the organized phase0_detector/ subfolder.  Search both locations so
+        # inference works regardless of how the checkpoint bundle was saved.
+        detector_search_dirs = [checkpoint_dir, os.path.join(checkpoint_dir, "phase0_detector")]
+        detector_path = next(
+            (path for path in (os.path.join(d, "face_detector.pt") for d in detector_search_dirs)
+             if os.path.isfile(path)),
+            None,
+        )
+        if detector_path and hasattr(self.detector, "load_trained_checkpoint"):
             self.detector.load_trained_checkpoint(detector_path, device=device)
             print(f"Loaded AQUA face detector from {detector_path}")
         p1_candidates = [
@@ -108,18 +120,25 @@ class OccuPoseBroadDictPipeline(nn.Module):
             os.path.join(checkpoint_dir, "latest_backbone.pt"),
             os.path.join(checkpoint_dir, "phase1_backbone_curricular.pt"),
             os.path.join(checkpoint_dir, "phase1_epoch_100.pt"),
+            os.path.join(os.path.join(checkpoint_dir, "phase0_detector"), "recognition_backbone.pt"),
         ]
         for path in p1_candidates:
             if not os.path.isfile(path):
                 continue
             checkpoint = torch.load(path, map_location=device)
-            if checkpoint.get("schema_version") not in (None, 2):
+            if checkpoint.get("schema_version") != 2:
                 raise ValueError(f"Unsupported checkpoint schema in {path}: {checkpoint.get('schema_version')}")
-            if checkpoint.get("kind") not in (None, "recognition_backbone"):
+            if checkpoint.get("kind") != "recognition_backbone":
                 raise ValueError(f"Checkpoint is not a recognition backbone artifact: {path}")
             if checkpoint.get("input_size") not in (None, [112, 112], (112, 112)):
                 raise ValueError(f"Recognition checkpoint requires input_size=(112,112): {path}")
             saved_config = checkpoint.get("model_config", {})
+            if not saved_config:
+                raise ValueError(f"Recognition checkpoint has no model_config metadata: {path}")
+            saved_alignment = checkpoint.get("recognition_alignment", saved_config.get("recognition_alignment", self.recognition_alignment))
+            if saved_alignment not in {"resize", "landmarks"}:
+                raise ValueError(f"Unsupported recognition alignment mode in {path}: {saved_alignment}")
+            self.recognition_alignment = saved_alignment
             saved_backbone_type = saved_config.get("backbone_type", self.backbone_type)
             saved_embedding_dim = int(saved_config.get("embedding_dim", self.feature_dim))
             if saved_backbone_type != self.backbone_type or saved_embedding_dim != self.feature_dim:
@@ -145,8 +164,13 @@ class OccuPoseBroadDictPipeline(nn.Module):
             print(f"Loaded recognition backbone from {path}")
             break
 
-        p2_path = os.path.join(checkpoint_dir, "phase2_anet_attributes.pt")
-        if os.path.isfile(p2_path):
+        p2_search_dirs = [checkpoint_dir, os.path.join(checkpoint_dir, "phase0_detector")]
+        p2_path = next(
+            (path for path in (os.path.join(d, "phase2_anet_attributes.pt") for d in p2_search_dirs)
+             if os.path.isfile(path)),
+            None,
+        )
+        if p2_path:
             checkpoint = torch.load(p2_path, map_location=device)
             if self.attribute_parser is None:
                 self.attribute_parser = ANetAttributeParser().to(device)
@@ -169,6 +193,16 @@ class OccuPoseBroadDictPipeline(nn.Module):
         if os.path.isfile(p3_path):
             from models.gcn_cluster import GCNLinkPredictor
             checkpoint = torch.load(p3_path, map_location=device)
+            if checkpoint.get("schema_version") != 2 or checkpoint.get("kind") != "gcn_adapter":
+                raise ValueError(f"Unsupported GCN adapter checkpoint: {p3_path}")
+            if checkpoint.get("input_size") not in ([112, 112], (112, 112)):
+                raise ValueError(f"GCN adapter requires input_size=(112,112): {p3_path}")
+            saved_config = checkpoint.get("model_config", {})
+            saved_dim = int(saved_config.get("embedding_dim", self.feature_dim))
+            if saved_dim != self.feature_dim:
+                raise ValueError(
+                    f"GCN adapter embedding dimension {saved_dim} does not match backbone {self.feature_dim}"
+                )
             self.gcn_predictor = GCNLinkPredictor(feature_dim=self.feature_dim).to(device)
             self._load_state(self.gcn_predictor, checkpoint.get("gcn_predictor", checkpoint.get("state_dict")), "GCN predictor")
             print(f"Loaded GCN adapter from {p3_path}")
@@ -177,7 +211,9 @@ class OccuPoseBroadDictPipeline(nn.Module):
     def _prepare_crop(self, crop: torch.Tensor, landmarks: Optional[torch.Tensor] = None):
         if self._foreground_requested and self.sam_segmentor is None:
             raise RuntimeError("Foreground preprocessing was requested but no compatible checkpoint is loaded")
-        alignment_landmarks = landmarks.unsqueeze(0) if landmarks is not None and landmarks.ndim == 2 else landmarks
+        alignment_landmarks = None
+        if self.recognition_alignment == "landmarks":
+            alignment_landmarks = landmarks.unsqueeze(0) if landmarks is not None and landmarks.ndim == 2 else landmarks
         aligned, used_landmarks = align_face_crop(crop, alignment_landmarks, output_size=(112, 112))
         if self.sam_segmentor is not None:
             box_prompt = torch.tensor([[0.0, 0.0, 112.0, 112.0]], device=aligned.device).expand(aligned.shape[0], -1)
@@ -199,9 +235,25 @@ class OccuPoseBroadDictPipeline(nn.Module):
         embedding = self.backbone(processed)
         return embedding, pose, aligned, used_frontalizer, processed
 
+    @staticmethod
+    def _gallery_cache_signature(samples):
+        signature = []
+        for path, label in samples:
+            try:
+                stat = os.stat(path)
+                signature.append((path, int(label), stat.st_size, stat.st_mtime_ns))
+            except OSError:
+                signature.append((path, int(label), None, None))
+        return signature
+
+    def _enroll_embeddings(self, embedding_tensor, label_tensor, names):
+        self.ddrc_classifier.enroll_gallery(embedding_tensor, label_tensor, names)
+        self.has_calibrated_gallery = False
+        return len(names)
+
     @torch.no_grad()
-    def enroll_dataset(self, name_label_dir: str, device: torch.device = None):
-        """Enroll face-crop images using the same crop/preprocessing contract as queries."""
+    def enroll_dataset(self, name_label_dir: str, device: torch.device = None, cache_path: str = None):
+        """Enroll face crops, reusing a cache when the gallery is unchanged."""
         if device is None:
             device = next(self.parameters()).device
         self.to(device)
@@ -210,25 +262,64 @@ class OccuPoseBroadDictPipeline(nn.Module):
             transform=get_default_transform((112, 112), is_train=False),
             is_train=False,
         )
+        signature = self._gallery_cache_signature(dataset.samples)
+        if cache_path and os.path.isfile(cache_path):
+            try:
+                cached = torch.load(cache_path, map_location="cpu", weights_only=False)
+                if cached.get("schema_version") == 1 and cached.get("gallery_signature") == signature:
+                    embedding_tensor = cached["embeddings"].to(device)
+                    label_tensor = cached["labels"].to(device)
+                    cached_names = cached.get("names")
+                    if cached_names:
+                        print(f"Loaded cached gallery embeddings from {cache_path} ({embedding_tensor.shape[0]} samples)", flush=True)
+                        return self._enroll_embeddings(embedding_tensor, label_tensor, cached_names)
+            except Exception as exc:
+                print(f"Warning: could not load gallery embedding cache; recomputing: {exc}", flush=True)
+
         embeddings, labels = [], []
+        skipped = 0
         self.eval()
-        for path, label in dataset.samples:
+        total_samples = len(dataset.samples)
+        for sample_index, (path, label) in enumerate(dataset.samples, start=1):
             try:
                 image = Image.open(path).convert("RGB")
                 tensor = get_default_transform((112, 112), is_train=False)(image).unsqueeze(0).to(device)
                 embedding, _, _, _, _ = self._embed_crop(tensor, None)
-                embeddings.append(embedding.squeeze(0))
+                embeddings.append(embedding.squeeze(0).cpu())
                 labels.append(label)
+                if sample_index == 1 or sample_index % 25 == 0 or sample_index == total_samples:
+                    print(f"Gallery embedding progress: {sample_index}/{total_samples}", flush=True)
             except Exception as exc:
-                raise RuntimeError(f"Failed to enroll {path}: {exc}") from exc
-        embedding_tensor = torch.stack(embeddings).to(device)
-        label_tensor = torch.tensor(labels, dtype=torch.long, device=device)
-        names = [None] * len(dataset.class_to_idx)
-        for name, index in dataset.class_to_idx.items():
-            names[index] = name.replace("_", " ").title()
-        self.ddrc_classifier.enroll_gallery(embedding_tensor, label_tensor, names)
-        self.has_calibrated_gallery = False
-        return len(names)
+                skipped += 1
+                print(f"Warning: skipping unreadable gallery image {path}: {exc}")
+        if not embeddings:
+            raise RuntimeError(f"No readable gallery images found under {name_label_dir}")
+        if skipped:
+            print(f"Skipped {skipped} unreadable gallery images during enrollment")
+        embedding_tensor = torch.stack(embeddings)
+        label_tensor = torch.tensor(labels, dtype=torch.long)
+        label_to_name = {
+            int(index): name.replace("_", " ").title()
+            for name, index in dataset.class_to_idx.items()
+        }
+        unique_labels = sorted(set(labels))
+        names = [label_to_name[label] for label in unique_labels]
+        label_remap = {label: index for index, label in enumerate(unique_labels)}
+        label_tensor = torch.tensor([label_remap[int(label)] for label in labels], dtype=torch.long)
+        if cache_path:
+            try:
+                os.makedirs(os.path.dirname(cache_path), exist_ok=True)
+                torch.save({
+                    "schema_version": 1,
+                    "gallery_signature": signature,
+                    "names": names,
+                    "embeddings": embedding_tensor.cpu(),
+                    "labels": label_tensor.cpu(),
+                }, cache_path)
+                print(f"Saved gallery embedding cache to {cache_path}")
+            except Exception as exc:
+                print(f"Warning: could not save gallery embedding cache: {exc}")
+        return self._enroll_embeddings(embedding_tensor.to(device), label_tensor.to(device), names)
 
     def forward(self, img_tensor: torch.Tensor, score_threshold: float = 0.4) -> List[Dict[str, Any]]:
         if img_tensor.ndim != 4 or img_tensor.shape[0] != 1:

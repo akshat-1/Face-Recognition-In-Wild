@@ -130,14 +130,35 @@ contract.
 Synthetic samples are available only through the explicit
 `allow_synthetic_fixtures=True` test option. They are never the default.
 
-WIDER FACE is a detection dataset and is not used as an identity-classification
-dataset unless a separate identity manifest is supplied.
+The special nested AQUA WIDER source is also used for requested generic folder
+labels. It is not verified person identity supervision: its folders are
+event/scene-style categories and an image can contain multiple faces.
 
 ### Unlabeled dataset
 
 `UnlabeledWildDataset` returns `(image, -1, False)`. It also fails fast by
 default. It is used by the optional graph-adaptation phase and never receives
 random identity labels.
+
+The special source is located at:
+
+```text
+unlabeled/masked-face-detection-wider-dataset/
+  COVID-mask-detection_WIDER/Wider-mask-detection/
+    images/{train,val}/<folder>/<image>.jpg
+    labels/{train,val}/<folder>/<image>.txt
+```
+
+Its YOLO boxes are used for detector training. Every valid box is also
+materialized as a recognition crop whose generic label comes from the folder
+name after removing digits and punctuation; for example, `0--Parade` becomes
+`Parade`. All available `train` and `val` folders are used. This label is
+applied to every face crop in the folder by explicit convention, not because
+the folder has been proven to identify the person in the crop.
+Once recognized as this special source, its images are excluded from the generic
+unlabeled-scene/crop stream so they are not detected and pseudo-labelled a
+second time. Other datasets nested under `unlabeled/` continue through the
+normal unlabeled adaptation path.
 
 ### Attribute dataset
 
@@ -158,7 +179,10 @@ selection. All foreground YOLO rows are mapped to torchvision class `1` (face)
 and background remains class `0`; mask-condition IDs are not assumed to be
 consistent across subsets. The detection target contains all valid boxes in
 pixel-space `xyxy` format, plus `area` and `iscrowd` fields. These annotations
-train localization only; identity recognition still uses `name_label`.
+train localization only; identity recognition uses `name_label` plus the
+explicit WIDER folder-label crop path described above.
+When the nested WIDER source is discovered, its folder-labelled crops are
+added to recognition training alongside `name_label`.
 
 ## 5. Recognition backbone and losses
 
@@ -269,9 +293,11 @@ bb_label YOLO/Darknet annotations
   -> face_detector.pt
 ```
 
-The train split is selected when an explicit `train` directory exists; unsplit
-AQUA subsets are retained alongside it, while explicit test/validation folders
-are excluded. Single-layout datasets are scanned without a split filter. The default
+The full model defaults to `detector_split=all`, so AQUA `train`, `test`, and
+`validate` directories are all used as detector-training samples. This maximizes
+the data available for the final model but means those splits are no longer
+unbiased evaluation sets. Set `detector_split=train` when a held-out evaluation
+is required. Unsplit AQUA subsets are retained in either mode. The default
 detector batch size is `2`, independent of the recognition batch size. The
 checkpoint stores the detector state, class count, architecture, epoch, and
 schema. A later run loads this completed artifact unless `--retrain_all` is
@@ -357,20 +383,24 @@ flowchart LR
         BB --> BBD --> DET --> DETCKPT
 
         ID["AQUA name_label\nidentity folders / face crops"]
-        IDD["NameLabeledFaceDataset\ncanonical identity labels"]
+        WID["nested WIDER\nYOLO boxes + folder labels"]
+        IDD["NameLabeledFaceDataset +\nWiderFolderLabeledFaceDataset\ncombined recognition crops"]
         BACKBONE["IResNet-100, ViT-Face,\nor FasterRCNNBackbone\nnormalized 512-D embedding"]
         LOSS["BroadFaceCurricularLoss\nCurricularFace margin +\ndetached memory/proxy queue"]
-        ID --> IDD --> BACKBONE --> LOSS
+        ID --> IDD
+        WID --> IDD
+        IDD --> BACKBONE --> LOSS
         LOSS --> RECCKPT["recognition_backbone.pt\nlatest_backbone.pt"]
 
         CELEBA["CelebA images +\nlist_attr_celeba annotations"]
         ANET_T["ANetAttributeParser\n40 binary attributes +\nspatial occlusion head"]
         CELEBA --> ANET_T --> ANETCKPT["phase2_anet_attributes.pt"]
 
-        UNLABELED["AQUA unlabeled/\nface crops"]
+        UNLABELED["AQUA unlabeled/\nface crops or full scenes"]
+        UCROP["face crops directly, or\ntrained detector -> high-confidence crops\n(boxes are preprocessing metadata)"]
         GCN_T["GCNLinkPredictor\nedge probabilities +\nglobal pseudo-label graph"]
         ADAPT["labelled + pseudo-labelled\nsemi-supervised fine-tuning"]
-        UNLABELED --> GCN_T --> ADAPT --> GCNCKPT["phase3_semi_gcn_predictor.pt\nphase3_adapted_backbone.pt"]
+        UNLABELED --> UCROP --> GCN_T --> ADAPT --> GCNCKPT["phase3_semi_gcn_predictor.pt\nphase3_adapted_backbone.pt"]
         RECCKPT --> ADAPT
     end
 
@@ -444,6 +474,8 @@ flowchart LR
 | Component | Code | Input | Output / purpose | Default state |
 |---|---|---|---|---|
 | AQUA detector | `TorchvisionFaceDetector` in `models/detector.py` | Full image and YOLO-derived boxes during training | Face boxes and confidence scores | Trained in Phase 0 when `--bb_dir` is supplied |
+| Scene-to-crop bridge | `DetectorCropDataset` in `dataset.py` | Unlabeled full scenes plus trained detector | High-confidence face crops for adaptation | Used only with `--unlabeled_mode detected_scenes` |
+| WIDER folder-label crops | `WiderFolderLabeledFaceDataset` in `dataset.py` | Parallel WIDER image/YOLO label trees | One face crop per YOLO box, labelled from cleaned folder text | Automatically added to recognition training when nested under `unlabeled/` |
 | External detector fallback | `SOTAFaceDetector` | Full normalized image | YuNet/MTCNN boxes, scores, and five landmarks | Used when no trained detector checkpoint is loaded |
 | Soft-NMS | `soft_nms_pytorch()` | Candidate boxes, scores, landmarks | De-duplicated boxes while preserving row alignment | Always applied to detector output |
 | Alignment | `pipeline/alignment.py` | Face crop and five landmarks | Canonical 112x112 crop | Landmark similarity transform, or box-resize fallback |
@@ -464,12 +496,32 @@ be described as doing all three jobs.
 The training command is:
 
 ```bash
+# Run all configured stages.
 python train.py \
   --bb_dir <AQUA_bb_label_directory> \
   --data_dir <identity_face_crop_directory> \
   --checkpoint_dir <checkpoint_directory> \
   --backbone iresnet100
+
+# Run stages independently when only one dataset is available.
+python train.py --phase detector --bb_dir <AQUA_bb_label_directory> \
+  --checkpoint_dir <checkpoint_directory>
+python train.py --phase recognition --data_dir <name_label_directory> \
+  --checkpoint_dir <checkpoint_directory>
+python train.py --phase adapt --data_dir <name_label_directory> \
+  --unlabeled_dir <unlabeled_scene_or_crop_directory> \
+  --checkpoint_dir <checkpoint_directory> \
+  --unlabeled_mode detected_scenes
 ```
+
+The phase selector is intentional:
+
+| Phase | Required input | Produces | Uses detector boxes as labels? |
+|---|---|---|---|
+| `detector` | `bb_label` or nested WIDER YOLO source | `face_detector.pt` | Yes, real YOLO boxes only |
+| `recognition` | `name_label` identity crops | `recognition_backbone.pt` | No; identity crops have no boxes |
+| `adapt` | existing recognition checkpoint + unlabeled data | Phase 3 adapted artifacts | No; detector boxes are preprocessing-only |
+| `all` | whichever configured inputs are available | Runs configured stages in order | Never invents identity boxes |
 
 `train.py:main()` performs the following initialization:
 
@@ -490,6 +542,13 @@ must contain real labelled face images arranged in identity folders. The
 unlabeled and CelebA streams are optional and are skipped explicitly when their
 paths are not configured.
 
+`--data_dir` may point either to `Face_Dataset/name_label` or to its AQUA parent;
+the loader resolves the `name_label/` child. Passing `bb_label/` as the identity
+root is rejected. The same rule applies to `--unlabeled_dir`, which must be
+explicitly identified as either face crops or full scenes.
+The nested WIDER folder-label source is auto-discovered below `--unlabeled_dir`,
+or can be supplied directly with `--wider_dir`.
+
 ### 9.2 Phase 1 — identity backbone training
 
 The implementation is `train_phase1_backbone_curricular()` in `train.py`.
@@ -499,13 +558,21 @@ The implementation is `train_phase1_backbone_curricular()` in `train.py`.
 ```text
 cfg.dataset.train_data_dir
   -> NameLabeledFaceDataset
-  -> deterministic image paths and canonical identity names
+  -> optional nested WiderFolderLabeledFaceDataset
+  -> CombinedIdentityDataset
+  -> deterministic paths, face crops, and canonical labels
   -> image resize/normalization to 112x112 and optional train flip
   -> (images, identity_labels, is_labeled=True)
 ```
 
-Identity labels are validated against the classifier class count. WIDER FACE
-bounding-box images are not silently converted into identity labels.
+Identity labels are validated against the classifier class count. Normal WIDER
+FACE boxes are not silently converted into identity labels; only the explicit
+nested AQUA folder-label source is converted into crops and generic labels.
+`name_label` is a face-crop identity dataset; it does not provide detector
+boxes. Recognition uses the explicit `recognition_alignment` contract, which is
+`resize` by default so training crops, gallery enrollment, and detector queries
+share the same fallback preprocessing. Landmark alignment can be enabled only
+when the corresponding training and inference preprocessing are both intended.
 
 #### Model construction
 
@@ -615,7 +682,8 @@ checkpoint receives an explicit error.
 The optional entry point is `train_phase3_semi_supervised_gcn()` in `train.py`.
 
 ```text
-unlabeled face-crop dataset
+unlabeled input
+  -> face-crops directly, or full scenes -> trained detector -> high-confidence crops
   -> frozen Phase 1 backbone
   -> one embedding per globally indexed sample
   -> GCN edge predictor trained on labelled identity pairs
@@ -625,6 +693,13 @@ unlabeled face-crop dataset
   -> phase3_semi_gcn_predictor.pt
   -> phase3_adapted_backbone.pt
 ```
+
+When the nested `masked-face-detection-wider-dataset` is present, it is not
+left only in the unlabeled stream. Its parallel YOLO annotations are included
+in detector data, and its valid boxes are converted into folder-labelled
+recognition crops before the GCN phase. The folder-labelled crops join the
+labelled side of the graph-training data; they are not treated as GCN
+pseudo-labels.
 
 For small graphs, the trained GCN edge head predicts pair probabilities. For
 large graphs, `generate_global_pseudo_labels()` constructs a blockwise,
@@ -640,6 +715,19 @@ L_total = L_labelled + lambda_semi * L_pseudo
 
 The adapted backbone is saved separately so the original supervised checkpoint
 remains reproducible.
+
+`--unlabeled_mode face_crops` is for a directory that already contains one face
+per image. `--unlabeled_mode detected_scenes` is for full wild images; it runs
+the trained detector first and keeps only boxes above
+`unlabeled_score_threshold`. These boxes are crop metadata, not ground-truth
+boxes and not identity labels. If a full-scene directory produces no confident
+faces, adaptation fails clearly instead of clustering whole scenes.
+
+The special WIDER source is discovered automatically below `unlabeled/`. To
+store it elsewhere, pass `--wider_dir <masked-face-detection-wider-dataset>`.
+Folder labels are cleaned by removing digits and punctuation, so `0--Parade`
+becomes `Parade`, and that label is assigned to each valid YOLO crop from the
+folder.
 
 ### 9.5 Checkpoint loading before inference
 
@@ -679,6 +767,12 @@ phase2_anet_attributes.pt
 phase3_semi_gcn_predictor.pt
   -> optional GCN adapter
 ```
+
+Recognition artifacts use `schema_version=2`, `kind=recognition_backbone`, and
+must include architecture, embedding dimension, input size, and alignment
+metadata. Detector artifacts use `schema_version=2`,
+`kind=face_detector`, and a compatible class count. Incompatible or legacy
+artifacts are rejected rather than loaded under a guessed architecture.
 
 Loading a backbone does not create an identity gallery. Enrollment is a separate
 required operation.

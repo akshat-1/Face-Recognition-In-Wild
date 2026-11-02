@@ -1,5 +1,7 @@
 #!/bin/bash
 export PYTHONUNBUFFERED=1
+export PYTHONIOENCODING=UTF-8
+export AQUA_TRAIN_DETECTOR_BACKEND=anchor_free
 export TORCH_NCCL_ASYNC_ERROR_HANDLING=1
 export TORCH_NCCL_HEARTBEAT_TIMEOUT_SEC=1800
 export NCCL_SOCKET_FAMILY=AF_INET
@@ -7,7 +9,7 @@ export GLOO_SOCKET_FAMILY=AF_INET
 export GLOO_SOCKET_IFNAME=ib0,eth0,ens,enp
 export NCCL_SOCKET_IFNAME=ib0,eth0,ens,enp
 export NCCL_IB_DISABLE=0
-export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:$LD_LIBRARY_PATH
+export LD_LIBRARY_PATH=/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib:/lfs/usrhome/btech/na22b025/miniforge3/envs/venv/lib:${LD_LIBRARY_PATH:-}
 
 ARG_NODEFILE="$1"
 ARG_MASTER="$2"
@@ -16,6 +18,7 @@ ARG_NNODES="$4"
 set --
 
 source /lfs/usrhome/btech/na22b025/miniforge3/bin/activate venv_gpu
+export PYTHONPATH="/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/.python_deps:${PYTHONPATH:-}"
 
 if [ -n "$ARG_NODEFILE" ] && [ -f "$ARG_NODEFILE" ]; then
     PBS_NODEFILE="$ARG_NODEFILE"
@@ -76,7 +79,7 @@ fi
 echo "⚡ [OccuPose Unit Rank $NODE_RANK / $NNODES] Launching $NUM_GPUS-GPU torchrun on $HOSTNAME_SHORT (Master IPv4: $MASTER_ADDR:$MASTER_PORT)..."
 
 if [ "$NODE_RANK" -eq 0 ]; then
-    /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
+    stdbuf -oL -eL /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
       --nnodes=$NNODES \
       --nproc_per_node=$NUM_GPUS \
       --node_rank=$NODE_RANK \
@@ -85,16 +88,16 @@ if [ "$NODE_RANK" -eq 0 ]; then
       /lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py \
       --data_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/name_label" \
       --unlabeled_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled" \
-      --celeba_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/celeba" \
+      --celeba_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled/img_align_celeba/img_align_celeba" \
       --checkpoint_dir "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/weights" \
       --backbone iresnet100 \
       --batch_size 32 \
       --epochs 100 \
       --retrain_all \
       --lr 0.1 \
-      --fp16 2>&1 | tee -a "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_aqua_live.log"
+       --fp16 2>&1 | stdbuf -oL -eL tee -a "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_aqua_live.log"
 else
-    /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
+    stdbuf -oL -eL /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun \
       --nnodes=$NNODES \
       --nproc_per_node=$NUM_GPUS \
       --node_rank=$NODE_RANK \
@@ -103,12 +106,12 @@ else
       /lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py \
       --data_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/name_label" \
       --unlabeled_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled" \
-      --celeba_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/celeba" \
+      --celeba_dir "/lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled/img_align_celeba/img_align_celeba" \
       --checkpoint_dir "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/weights" \
       --backbone iresnet100 \
       --batch_size 32 \
       --epochs 100 \
       --retrain_all \
       --lr 0.1 \
-      --fp16 > "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_node_1.log" 2>&1
+       --fp16 2>&1 | stdbuf -oL -eL tee -a "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train_node_1.log"
 fi
