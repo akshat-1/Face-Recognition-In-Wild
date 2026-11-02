@@ -25,7 +25,7 @@ from typing import Any, Dict, List, Optional
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
-from dataset import get_default_transform
+from dataset import pil_to_float_tensor
 from pipeline.wild_face_pipeline import OccuPoseBroadDictPipeline
 
 
@@ -159,8 +159,10 @@ def predict_image(
     with Image.open(path) as image:
         rgb = image.convert("RGB")
     original_width, original_height = rgb.size
-    transform = get_default_transform((224, 224), is_train=False)
-    tensor = transform(rgb).unsqueeze(0).to(device)
+    # Keep the scene at its native resolution.  Faster R-CNN owns the
+    # detector resize policy (min_size=800, max_size=1333); shrinking a full
+    # scene to 224x224 first removes small faces before the detector sees it.
+    tensor = pil_to_float_tensor(rgb).mul(2.0).sub(1.0).unsqueeze(0).to(device)
     predictions = pipeline(tensor, score_threshold=score_threshold)
     scale_x = original_width / float(tensor.shape[3])
     scale_y = original_height / float(tensor.shape[2])
@@ -220,7 +222,10 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output_dir", default="./inference_results")
     parser.add_argument("--output_json", default="predictions.jsonl")
-    parser.add_argument("--score_threshold", type=float, default=0.3)
+    # Low-quality, blurred, and occluded faces can receive modest detector
+    # scores even when the box is useful. Keep this lower than the training
+    # pseudo-label cutoff; callers can raise it for precision-oriented runs.
+    parser.add_argument("--score_threshold", type=float, default=0.05)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     return parser
 

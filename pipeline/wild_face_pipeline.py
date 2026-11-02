@@ -203,9 +203,17 @@ class OccuPoseBroadDictPipeline(nn.Module):
                 raise ValueError(
                     f"GCN adapter embedding dimension {saved_dim} does not match backbone {self.feature_dim}"
                 )
-            self.gcn_predictor = GCNLinkPredictor(feature_dim=self.feature_dim).to(device)
-            self._load_state(self.gcn_predictor, checkpoint.get("gcn_predictor", checkpoint.get("state_dict")), "GCN predictor")
-            print(f"Loaded GCN adapter from {p3_path}")
+            gcn_state = checkpoint.get("gcn_predictor", checkpoint.get("state_dict"))
+            if gcn_state:
+                self.gcn_predictor = GCNLinkPredictor(feature_dim=self.feature_dim).to(device)
+                self._load_state(self.gcn_predictor, gcn_state, "GCN predictor")
+                print(f"Loaded GCN adapter from {p3_path}")
+            else:
+                # The cached Phase 3 fast path stores pseudo-label metadata
+                # without a serialised predictor.  The adapted backbone is
+                # still a valid inference artifact; leave the optional graph
+                # module disabled instead of rejecting the whole checkpoint.
+                print(f"Loaded Phase 3 adaptation metadata from {p3_path}; no graph predictor state was saved")
         return loaded
 
     def _prepare_crop(self, crop: torch.Tensor, landmarks: Optional[torch.Tensor] = None):
