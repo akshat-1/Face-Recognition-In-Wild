@@ -13,6 +13,13 @@ gallery with the same recognition backbone.
 
 ## Quick start
 
+Install the dependencies (Python 3.10+; use the CUDA build of PyTorch on GPU
+machines):
+
+```bash
+pip install -r requirements.txt
+```
+
 Run one image:
 
 ```bash
@@ -161,13 +168,22 @@ backbone is the artifact used for the query embedding.
 
 ### Gallery classifier and open-set decision
 
-`DDRCClassifier` builds a dictionary from enrolled gallery embeddings. Its
-LISTA-style sparse solver reconstructs a query embedding from class atoms and
-computes a residual for every class. A class is accepted only when:
+`DDRCClassifier` builds a dictionary from enrolled gallery embeddings. Each
+identity contributes `atoms_per_class` atoms summarising **all** of its gallery
+photos: the normalised mean embedding for one atom, or deterministic spherical
+k-means centroids for several (useful when a person appears both with and
+without a mask). Its LISTA-style sparse solver reconstructs a query embedding
+from the atoms and computes a **relative** residual for every class: the
+fraction of the query that the class cannot explain, between 0 and 1. A class
+is accepted only when:
 
-- its residual is below the residual threshold; and
-- the gap between the best and second-best class is above the margin
-  threshold.
+- its relative residual is at most `--residual_threshold` (default `0.80`,
+  roughly cosine ≥ 0.45 to the class prototype); and
+- the relative gap between the best and second-best class is at least
+  `--margin_threshold` (default `0.10`).
+
+With a single enrolled identity there is no runner-up, so the residual gate
+alone decides and strangers are rejected.
 
 Otherwise the result is `unknown`. The reported recognition score is derived
 from residual quality and the best-vs-second-best margin.
@@ -231,6 +247,9 @@ directory or download them from the training system.
 | `--output_json` | `predictions.jsonl` | JSONL filename |
 | `--score_threshold` | `0.05` | detector score cutoff |
 | `--device` | `auto` | `auto`, `cpu`, or `cuda` |
+| `--residual_threshold` | `0.80` | open-set gate, 0–1; higher accepts weaker matches |
+| `--margin_threshold` | `0.10` | open-set gate; min relative gap to the runner-up identity |
+| `--atoms_per_class` | `1` | gallery prototypes per identity |
 
 ### Threshold tuning
 
@@ -265,17 +284,17 @@ If boxes are present but all identities are `unknown`:
 An unknown result can be correct: the classifier is intentionally open-set and
 does not force every detected face into the nearest enrolled identity.
 
-The current open-set gates are code-level settings in
-`models/ddrc_solver.py`: `residual_threshold=0.55` and
-`margin_threshold=0.10`. The pipeline currently uses these defaults and does
-not expose them as CLI flags. A larger residual threshold or smaller margin
-threshold accepts more weak matches; that can improve recall while increasing
-false identities. Tune them only against a held-out known/unknown set.
+The open-set gates are CLI flags: `--residual_threshold` (default `0.80`) and
+`--margin_threshold` (default `0.10`). A larger residual threshold or smaller
+margin threshold accepts more weak matches; that can improve recall while
+increasing false identities. The defaults are reasonable starting points, not
+calibrated values. Choose them on held-out data with `calibrate_open_set.py`
+(see [Measuring accuracy](#measuring-accuracy)).
 
-The gallery dictionary used by `inference.py` currently stores one atom per
-identity (`atoms_per_class=1`). Adding more varied gallery samples improves
-coverage, but changing the atom-count policy requires a small code-level
-configuration change and rebuilding the gallery cache.
+Every gallery photo now contributes to an identity's atoms, so adding more
+varied photos genuinely improves coverage. Use `--atoms_per_class 2` or `3`
+when a person's photos fall into clearly different looks. The gallery cache
+stores raw embeddings, so changing this flag needs no re-embedding.
 
 ### Improving difficult detections
 
@@ -433,6 +452,64 @@ frontalized             whether a compatible frontalizer was used
 residuals               per-class DDRC residuals
 ```
 
+## Measuring accuracy
+
+**Current status: no validated accuracy figure exists for this repository.**
+The trained checkpoints live on the AQUA cluster and are not published, and
+`results/widerface_eval/widerface_industry_metrics.csv` was produced without
+ground truth (`GroundTruth_Loaded=False`), so it must not be quoted. Training
+also never scores a held-out split. Use the three evaluators below to produce
+real numbers; each needs the trained `weights/` bundle.
+
+| What | Command | Metric |
+|---|---|---|
+| Phase 0 detector | `python eval_widerface.py --image_dir WIDER_val/images --gt_file wider_face_split/wider_face_val_bbx_gt.txt` | WIDER FACE AP on Easy / Medium / Hard |
+| Recognition backbone | `python eval_lfw.py --weights_dir weights --pairs lfw/pairs.txt --images_dir lfw/lfw-deepfunneled` | LFW 10-fold verification accuracy |
+| Full open-set system | `python calibrate_open_set.py --weights_dir weights --gallery_dir Face_Dataset/name_label --known_dir HELDOUT_KNOWN --unknown_dir HELDOUT_UNKNOWN` | identification rate vs false-accept rate, plus recommended thresholds |
+
+What to expect, for orientation only:
+
+- Published Faster R-CNN face detectors trained on WIDER FACE reach roughly
+  90%+ AP on Easy and Medium but clearly less on Hard (tiny, blurred,
+  occluded faces). A score above 90% on Hard should not be expected from this
+  architecture.
+- Public IResNet-100 models trained on millions of images (MS1M, Glint360K)
+  score above 99% on LFW. This backbone is trained **from random
+  initialisation** on a much smaller identity set, so its LFW accuracy is
+  likely to be well below that. Run `eval_lfw.py` before making any claim.
+- Open-set identification on wild images depends mostly on gallery quality
+  and the chosen false-accept budget. Always report identification rate
+  together with the false-accept rate used.
+
+`calibrate_open_set.py` expects two held-out sets of face crops that were not
+used for training or enrollment: `--known_dir` holds other photos of enrolled
+people, using the gallery's folder names, and `--unknown_dir` holds people who
+are not enrolled. It writes the full sweep to
+`inference_results/open_set_sweep.csv` and prints the threshold pair with the
+best identification rate within `--max_false_accept` (default 1%).
+
+## Roadmap: highest-impact improvements
+
+1. **Start recognition from a public pretrained backbone.** Fine-tuning an
+   InsightFace IResNet-100 trained on MS1M or Glint360K, instead of training
+   from scratch, is the single largest expected accuracy gain.
+2. **Add landmarks to the detector.** Faster R-CNN supplies none, so crops are
+   only box-resized. A RetinaFace/SCRFD-style landmark head would enable the
+   existing five-point alignment and pose gating, which typically adds several
+   points of recognition accuracy on wild images.
+3. **Score a held-out split during training.** Phase 1 should report LFW,
+   CFP-FP or AgeDB verification accuracy each epoch and keep the best
+   checkpoint, rather than only the latest.
+4. **Calibrate and report.** Run the three evaluators above and record the
+   numbers, with their false-accept budget, in this README.
+5. **Batch the per-face work in `pipeline/wild_face_pipeline.py`.** Faces are
+   currently embedded one at a time; batching crops would speed up crowded
+   scenes considerably.
+6. **Repository hygiene.** `extracted_papers/` (full paper texts) and
+   `wider_face_split/` are listed in `.gitignore` but are still tracked;
+   removing them from the index keeps third-party content out of the public
+   repo.
+
 ## Verification and troubleshooting
 
 Check the code and command interfaces:
@@ -441,15 +518,19 @@ Check the code and command interfaces:
 python -m py_compile inference.py detector_inference.py train.py
 python inference.py --help
 python detector_inference.py --help
-python -m unittest tests.test_robustness tests.test_regressions -v
+python -m unittest discover -s tests -p 'test*.py' -v
 ```
+
+The test suite runs on CPU without weights or datasets. GitHub Actions runs it
+on every push and pull request.
 
 Common symptoms:
 
 | Symptom | Likely cause | Check |
 |---|---|---|
 | No predictions | detector threshold or checkpoint issue | run `detector_inference.py` |
-| Boxes but all `unknown` | missing/weak gallery | verify `--gallery_dir` and enrollment |
+| Boxes but all `unknown` | missing/weak gallery, or strict gates | verify `--gallery_dir`; calibrate `--residual_threshold` |
+| Strangers given a name | gates too loose | lower `--residual_threshold` or raise `--margin_threshold` |
 | Recognition loader fails on Phase 3 file | incompatible old artifact | use a schema-2 checkpoint and current loader |
 | Attributes absent | Phase 2 checkpoint not found | check `phase2_anet_attributes.pt` |
 | CUDA requested but unavailable | wrong runtime/node | use `--device auto` or `cpu` |
