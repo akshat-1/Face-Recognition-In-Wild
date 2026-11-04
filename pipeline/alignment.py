@@ -57,8 +57,19 @@ def _pixel_grid_to_normalized(grid: torch.Tensor, input_size: Tuple[int, int]) -
     return torch.stack([x, y], dim=-1)
 
 
-def _resize_crop(crop: torch.Tensor, output_size: Tuple[int, int]) -> torch.Tensor:
-    return F.interpolate(crop, size=output_size, mode="bilinear", align_corners=False)
+def resize_face_crop(crop: torch.Tensor, output_size: Tuple[int, int]) -> torch.Tensor:
+    """Resize a crop the way the training and gallery transforms do.
+
+    Training crops and gallery images go through PIL/torchvision ``Resize``,
+    which low-pass filters when shrinking. Plain bilinear interpolation does
+    not, so a large detected face (say 400 px) was aliased at inference but
+    smooth at training time. ``antialias=True`` closes that train/serve gap;
+    it is a no-op when enlarging.
+    """
+    return F.interpolate(crop, size=output_size, mode="bilinear", align_corners=False, antialias=True)
+
+
+_resize_crop = resize_face_crop  # backwards-compatible private alias
 
 
 def align_face_crop(

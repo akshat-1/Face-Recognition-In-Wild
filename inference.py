@@ -26,6 +26,7 @@ import torch
 from PIL import Image, ImageDraw, ImageFont
 
 from dataset import pil_to_float_tensor
+from models.ddrc_solver import DEFAULT_MARGIN_THRESHOLD, DEFAULT_RESIDUAL_THRESHOLD
 from pipeline.wild_face_pipeline import OccuPoseBroadDictPipeline
 
 
@@ -84,6 +85,9 @@ def load_pipeline(
     gallery_dir: Optional[str],
     device: torch.device,
     detector_checkpoint: Optional[str] = None,
+    residual_threshold: float = DEFAULT_RESIDUAL_THRESHOLD,
+    margin_threshold: float = DEFAULT_MARGIN_THRESHOLD,
+    atoms_per_class: int = 1,
 ) -> OccuPoseBroadDictPipeline:
     """Load detector, recognition, attributes, adaptation, and gallery state."""
     weights_root = Path(weights_dir)
@@ -92,6 +96,9 @@ def load_pipeline(
         feature_dim=512,
         detector_weights_dir=str(weights_root),
         detector_checkpoint=str(detector_path) if detector_path else None,
+        residual_threshold=residual_threshold,
+        margin_threshold=margin_threshold,
+        atoms_per_class=atoms_per_class,
     ).to(device)
     pipeline.load_pretrained_weights(checkpoint_dir=str(weights_root), device=device)
 
@@ -190,6 +197,9 @@ def run_inference(args: argparse.Namespace) -> Path:
         gallery_dir=args.gallery_dir,
         device=device,
         detector_checkpoint=args.detector_checkpoint,
+        residual_threshold=args.residual_threshold,
+        margin_threshold=args.margin_threshold,
+        atoms_per_class=args.atoms_per_class,
     )
     output_dir = Path(args.output_dir)
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -227,6 +237,26 @@ def build_parser() -> argparse.ArgumentParser:
     # pseudo-label cutoff; callers can raise it for precision-oriented runs.
     parser.add_argument("--score_threshold", type=float, default=0.05)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
+    parser.add_argument(
+        "--residual_threshold",
+        type=float,
+        default=DEFAULT_RESIDUAL_THRESHOLD,
+        help="open-set gate: max fraction of the query the best identity may leave unexplained "
+        "(0-1; higher accepts more weak matches). Calibrate with calibrate_open_set.py",
+    )
+    parser.add_argument(
+        "--margin_threshold",
+        type=float,
+        default=DEFAULT_MARGIN_THRESHOLD,
+        help="open-set gate: min relative residual gap between the best and second-best identity",
+    )
+    parser.add_argument(
+        "--atoms_per_class",
+        type=int,
+        default=1,
+        help="gallery dictionary atoms per identity; >1 clusters each person's photos "
+        "(e.g. with/without mask) into that many prototypes",
+    )
     return parser
 
 

@@ -5,17 +5,16 @@ from typing import Any, Dict, List, Optional
 
 import torch
 import torch.nn as nn
-import torch.nn.functional as F
 from PIL import Image
 
 from dataset import NameLabeledFaceDataset, get_default_transform
 from models.anet_attribute import ANetAttributeParser
 from models.backbone import FasterRCNNBackbone, ResNet100Backbone, vit_face_base
-from models.ddrc_solver import DDRCClassifier
+from models.ddrc_solver import DEFAULT_MARGIN_THRESHOLD, DEFAULT_RESIDUAL_THRESHOLD, DDRCClassifier
 from models.detector import WildFaceDetector
 from models.pim_frontalizer import PIMFrontalizationGAN
 from models.sam_segmentor import SAMFaceSegmentor
-from pipeline.alignment import align_face_crop, estimate_pose_from_landmarks
+from pipeline.alignment import align_face_crop, estimate_pose_from_landmarks, resize_face_crop
 
 
 class OccuPoseBroadDictPipeline(nn.Module):
@@ -40,6 +39,8 @@ class OccuPoseBroadDictPipeline(nn.Module):
         use_attributes: bool = False,
         use_foreground_mask: bool = False,
         atoms_per_class: int = 1,
+        residual_threshold: float = DEFAULT_RESIDUAL_THRESHOLD,
+        margin_threshold: float = DEFAULT_MARGIN_THRESHOLD,
     ):
         super().__init__()
         self.feature_dim = feature_dim
@@ -80,6 +81,8 @@ class OccuPoseBroadDictPipeline(nn.Module):
             # nominal class count.
             num_classes=0,
             atoms_per_class=atoms_per_class,
+            residual_threshold=residual_threshold,
+            margin_threshold=margin_threshold,
         )
         self.gcn_predictor = None
         self.has_trained_backbone = False
@@ -152,10 +155,15 @@ class OccuPoseBroadDictPipeline(nn.Module):
                     raise ValueError(f"Unsupported backbone in checkpoint: {saved_backbone_type}")
                 self.backbone_type = saved_backbone_type
                 self.feature_dim = saved_embedding_dim
+                # Rebuild for the checkpoint's embedding size but keep the
+                # caller's gallery/open-set configuration.
+                previous = self.ddrc_classifier
                 self.ddrc_classifier = DDRCClassifier(
                     feature_dim=saved_embedding_dim,
                     num_classes=0,
-                    atoms_per_class=1,
+                    atoms_per_class=previous.atoms_per_class,
+                    residual_threshold=previous.residual_threshold,
+                    margin_threshold=previous.margin_threshold,
                 ).to(device)
             state = checkpoint.get("backbone_state", checkpoint.get("backbone"))
             self._load_state(self.backbone, state, "backbone")
@@ -244,6 +252,11 @@ class OccuPoseBroadDictPipeline(nn.Module):
         return embedding, pose, aligned, used_frontalizer, processed
 
     @staticmethod
+    def display_name(folder_identity: str) -> str:
+        """Gallery folder identity -> the name reported in predictions."""
+        return folder_identity.replace("_", " ").title()
+
+    @staticmethod
     def _gallery_cache_signature(samples):
         signature = []
         for path, label in samples:
@@ -307,7 +320,7 @@ class OccuPoseBroadDictPipeline(nn.Module):
         embedding_tensor = torch.stack(embeddings)
         label_tensor = torch.tensor(labels, dtype=torch.long)
         label_to_name = {
-            int(index): name.replace("_", " ").title()
+            int(index): self.display_name(name)
             for name, index in dataset.class_to_idx.items()
         }
         unique_labels = sorted(set(labels))
@@ -365,7 +378,7 @@ class OccuPoseBroadDictPipeline(nn.Module):
                         attribute_landmarks[:, 0] *= 112.0 / max(float(x2 - x1), 1.0)
                         attribute_landmarks[:, 1] *= 112.0 / max(float(y2 - y1), 1.0)
                     attr_logits, occ_mask, occluded = self.attribute_parser(
-                        F.interpolate(crop, size=(112, 112), mode="bilinear", align_corners=False),
+                        resize_face_crop(crop, (112, 112)),
                         attribute_landmarks.unsqueeze(0) if attribute_landmarks is not None else None,
                     )
                     is_occluded = bool(occluded[0].item())

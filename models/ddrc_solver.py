@@ -14,6 +14,53 @@ import torch.nn as nn
 import torch.nn.functional as F
 
 
+# Open-set defaults. ``residual_threshold`` is a *relative* residual: the
+# fraction of the (outlier-cleaned) query energy that the best class fails to
+# reconstruct, so it lives in [0, 1] regardless of the embedding dimension.
+# With one atom per class, 0.80 accepts roughly cosine >= 0.45 to the class
+# prototype; ``margin_threshold`` is the relative gap to the runner-up class.
+# Both should be re-selected on a held-out known/unknown split
+# (see calibrate_open_set.py).
+DEFAULT_RESIDUAL_THRESHOLD = 0.80
+DEFAULT_MARGIN_THRESHOLD = 0.10
+
+
+def spherical_kmeans(embeddings: torch.Tensor, k: int, iterations: int = 25) -> torch.Tensor:
+    """Return ``k`` unit-norm centroids that summarise ``embeddings``.
+
+    Deterministic: initialisation is farthest-point sampling seeded at the
+    sample closest to the mean, so the same gallery always yields the same
+    dictionary. ``k == 1`` reduces to the normalised mean, the standard
+    face-recognition class prototype.
+    """
+    x = F.normalize(embeddings.float(), p=2, dim=1)
+    n = x.shape[0]
+    if n == 0:
+        raise ValueError("spherical_kmeans needs at least one embedding")
+    mean = F.normalize(x.mean(dim=0, keepdim=True), p=2, dim=1)
+    if k <= 1 or n == 1:
+        return mean if k <= 1 else x[:1].repeat(k, 1)
+    k = min(k, n)
+    chosen = [int((x @ mean.T).squeeze(1).argmax())]
+    closest = x @ x[chosen[0]]
+    for _ in range(1, k):
+        nxt = int(closest.argmin())
+        chosen.append(nxt)
+        closest = torch.maximum(closest, x @ x[nxt])
+    centroids = x[chosen].clone()
+    for _ in range(iterations):
+        assign = (x @ centroids.T).argmax(dim=1)
+        updated = torch.zeros_like(centroids).index_add_(0, assign, x)
+        empty = updated.norm(dim=1) < 1e-8
+        updated[empty] = centroids[empty]
+        updated = F.normalize(updated, p=2, dim=1)
+        if torch.allclose(updated, centroids, atol=1e-6):
+            centroids = updated
+            break
+        centroids = updated
+    return centroids
+
+
 def _soft_threshold(value: torch.Tensor, threshold: torch.Tensor) -> torch.Tensor:
     return torch.sign(value) * F.relu(value.abs() - threshold)
 
@@ -65,10 +112,14 @@ class DDRCClassifier(nn.Module):
     """
 
     def __init__(self, feature_dim: int = 512, num_classes: int = 0,
-                 atoms_per_class: int = 20, num_layers: int = 5):
+                 atoms_per_class: int = 20, num_layers: int = 5,
+                 residual_threshold: float = DEFAULT_RESIDUAL_THRESHOLD,
+                 margin_threshold: float = DEFAULT_MARGIN_THRESHOLD):
         super().__init__()
         self.feature_dim = int(feature_dim)
         self.atoms_per_class = max(1, int(atoms_per_class))
+        self.residual_threshold = float(residual_threshold)
+        self.margin_threshold = float(margin_threshold)
         self.num_classes = 0
         self.total_atoms = 0
         self.class_names: List[str] = []
@@ -147,51 +198,82 @@ class DDRCClassifier(nn.Module):
         blocks = []
         for class_id in unique:
             class_embeddings = F.normalize(embeddings[labels == class_id].float(), p=2, dim=1)
-            if class_embeddings.shape[0] >= self.atoms_per_class:
-                block = class_embeddings[:self.atoms_per_class]
+            if class_embeddings.shape[0] > self.atoms_per_class:
+                # Summarise *every* enrolled image. Taking the first N files
+                # discarded the rest of the gallery, so one bad first photo
+                # became the whole identity.
+                block = spherical_kmeans(class_embeddings, self.atoms_per_class)
             else:
-                block = class_embeddings.repeat((self.atoms_per_class + class_embeddings.shape[0] - 1) // class_embeddings.shape[0], 1)[:self.atoms_per_class]
+                block = class_embeddings
+            if block.shape[0] < self.atoms_per_class:
+                block = block.repeat((self.atoms_per_class + block.shape[0] - 1) // block.shape[0], 1)[:self.atoms_per_class]
             blocks.append(block)
         self.dictionary.copy_(torch.cat(blocks, dim=0).T)
         self.class_names = names
 
-    def forward(self, f: torch.Tensor, residual_threshold: float = 0.55,
-                margin_threshold: float = 0.10):
+    def class_residuals(self, f: torch.Tensor) -> torch.Tensor:
+        """Relative per-class reconstruction residuals, shape ``(B, C)``.
+
+        Each value is ``||clean - D_c x_c||^2 / ||clean||^2``: the fraction of
+        the outlier-cleaned query that class ``c`` cannot explain. It is scale
+        free, so thresholds mean the same thing for any embedding size. (A
+        per-dimension mean is bounded by ``4 / feature_dim`` for unit vectors,
+        which left a 0.55 threshold unable to reject anything.)
+        """
         if f.ndim != 2 or f.shape[1] != self.feature_dim:
             raise ValueError(f"features must have shape (B,{self.feature_dim})")
-        batch_size = f.shape[0]
         if self.dictionary is None or self.num_classes == 0:
-            unknown = ["unknown"] * batch_size
-            return unknown, torch.zeros(batch_size, device=f.device), torch.empty(batch_size, 0, device=f.device)
-
+            return torch.empty(f.shape[0], 0, device=f.device)
         norm_f = F.normalize(f.float(), p=2, dim=1)
         x, error = self.lista_solver(norm_f, self.dictionary)
         clean = norm_f - error
+        energy = clean.square().sum(dim=1).clamp_min(1e-12)
         dictionary = F.normalize(self.dictionary.float(), p=2, dim=0)
-        reconstruction = x @ dictionary.T
         residuals = []
         for class_id in range(self.num_classes):
             start = class_id * self.atoms_per_class
             end = start + self.atoms_per_class
             class_reconstruction = x[:, start:end] @ dictionary[:, start:end].T
-            residuals.append((clean - class_reconstruction).square().mean(dim=1))
-        class_residuals = torch.stack(residuals, dim=1)
+            residuals.append((clean - class_reconstruction).square().sum(dim=1) / energy)
+        return torch.stack(residuals, dim=1)
+
+    def decide(self, class_residuals: torch.Tensor,
+               residual_threshold: Optional[float] = None,
+               margin_threshold: Optional[float] = None):
+        """Apply the open-set gates to precomputed residuals.
+
+        Split from :meth:`class_residuals` so threshold sweeps reuse one
+        LISTA pass per query.
+        """
+        residual_threshold = self.residual_threshold if residual_threshold is None else float(residual_threshold)
+        margin_threshold = self.margin_threshold if margin_threshold is None else float(margin_threshold)
+        batch_size = class_residuals.shape[0]
+        device = class_residuals.device
+        if class_residuals.shape[1] == 0:
+            return ["unknown"] * batch_size, torch.zeros(batch_size, device=device)
         sorted_residuals, sorted_indices = torch.sort(class_residuals, dim=1)
         best = sorted_indices[:, 0]
         best_residual = sorted_residuals[:, 0]
-        if self.num_classes > 1:
+        if class_residuals.shape[1] > 1:
             second = sorted_residuals[:, 1]
             margin = (second - best_residual) / second.clamp_min(1e-7)
         else:
+            # With one enrolled identity there is no runner-up; the residual
+            # gate alone decides, so a stranger is not auto-accepted.
             margin = torch.ones_like(best_residual)
 
-        confidence = torch.exp(-best_residual / max(float(residual_threshold), 1e-6))
-        confidence = confidence * margin.clamp(0.0, 1.0)
-        predictions = []
-        confidence_values = []
-        for index in range(batch_size):
-            known = bool(best_residual[index] <= residual_threshold and margin[index] >= margin_threshold)
-            class_index = int(best[index].item())
-            predictions.append(self.class_names[class_index] if known else "unknown")
-            confidence_values.append(float(confidence[index].clamp(0.0, 1.0).item()))
-        return predictions, torch.tensor(confidence_values, device=f.device), class_residuals
+        confidence = torch.exp(-best_residual / max(residual_threshold, 1e-6))
+        confidence = (confidence * margin.clamp(0.0, 1.0)).clamp(0.0, 1.0)
+        known = (best_residual <= residual_threshold) & (margin >= margin_threshold)
+        predictions = [
+            self.class_names[int(best[index])] if bool(known[index]) else "unknown"
+            for index in range(batch_size)
+        ]
+        return predictions, confidence
+
+    def forward(self, f: torch.Tensor, residual_threshold: Optional[float] = None,
+                margin_threshold: Optional[float] = None):
+        """Return ``(names, confidences, relative_residuals)`` for a batch."""
+        residuals = self.class_residuals(f)
+        predictions, confidence = self.decide(residuals, residual_threshold, margin_threshold)
+        return predictions, confidence, residuals
