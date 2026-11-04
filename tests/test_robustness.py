@@ -197,7 +197,12 @@ class TestCorrectedContracts(unittest.TestCase):
                 is_train=False,
                 detection_mode=True,
             )
-            image, target = dataset[0]
+            # Look the sample up by name: dataset order is now sorted and
+            # deterministic, so index 0 is the "test" split, not "train".
+            sample_index = next(
+                i for i, (path, _, _) in enumerate(dataset.samples) if path.endswith("sample.jpg")
+            )
+            image, target = dataset[sample_index]
             self.assertEqual(tuple(image.shape), (3, 50, 100))
             self.assertEqual(len(dataset), 4)
             self.assertEqual(tuple(target["boxes"].shape), (2, 4))

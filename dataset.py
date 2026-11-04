@@ -221,7 +221,8 @@ class UnlabeledWildDataset(data.Dataset):
         prev_count = len(self.samples)
         self.samples = []
         if self.unlabeled_dir and os.path.exists(self.unlabeled_dir):
-            for root, _, files in os.walk(self.unlabeled_dir):
+            for root, dirs, files in os.walk(self.unlabeled_dir):
+                dirs.sort()  # os.walk order is filesystem-dependent
                 for f in sorted(files):
                     if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                         path = os.path.join(root, f)
@@ -282,7 +283,8 @@ class DetectorCropDataset(data.Dataset):
         self.score_threshold = float(score_threshold)
         self.transform = transform if transform is not None else get_default_transform(image_size, is_train=False)
         image_paths = []
-        for root, _, files in os.walk(self.root_dir):
+        for root, dirs, files in os.walk(self.root_dir):
+            dirs.sort()  # os.walk order is filesystem-dependent
             for filename in sorted(files):
                 if filename.lower().endswith(VALID_IMAGE_EXTENSIONS):
                     path = os.path.join(root, filename)
@@ -460,8 +462,11 @@ class NameLabeledFaceDataset(data.Dataset):
 
     def _parse_filename_identities(self, base_dir: str):
         pattern = re.compile(r'^(.*?)(?:_\d+)?\.(?:jpg|jpeg|png|bmp|webp)$', re.IGNORECASE)
-        for root, _, files in os.walk(base_dir):
-            for f in files:
+        for root, dirs, files in os.walk(base_dir):
+            # Sorted traversal keeps MASK_* identity indices identical across
+            # machines; unsorted order silently permuted class labels.
+            dirs.sort()
+            for f in sorted(files):
                 if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
                     match = pattern.match(f)
                     raw_name = match.group(1) if match else "unknown_mask"
@@ -731,7 +736,8 @@ class BoundingBoxFaceDataset(data.Dataset):
         indexed_images = 0
         for sdir in search_dirs:
             if sdir and os.path.exists(sdir):
-                for root, _, files in os.walk(sdir):
+                for root, dirs, files in os.walk(sdir):
+                    dirs.sort()  # deterministic sample order / image_id across machines
                     label_root = root
                     normalized_root = os.path.normpath(root)
                     image_marker = os.sep + "images"
