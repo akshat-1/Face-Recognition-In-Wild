@@ -94,25 +94,31 @@
 % ==============================================================================
 \section{Phase 0: Faster R-CNN Fine-Tuning}
 
-\begin{frame}{Phase 0: Faster R-CNN Detection Pipeline}
-    \begin{block}{1. Feature Extraction \& Proposal Generation}
+\begin{frame}[allowframebreaks]{Phase 0: Faster R-CNN Pipeline}
+    \begin{block}{1. Input & Backbone}
         \begin{itemize}
-            \item \textbf{Backbone}: ResNet-50 with Feature Pyramid Network (FPN) extracts multi-scale feature maps (P2--P6).
-            \item \textbf{RPN}: Generates region proposals across scales, filtering them to the top 300 candidates based on objectness scores.
+            \item Input: Image tensor, normalized to [0,1].
+            \item Backbone (ResNet-50 + FPN): Extracts multi-scale feature maps (P2--P6) for robust object detection across scales.
         \end{itemize}
     \end{block}
-
-    \begin{block}{2. ROI Alignment \& Classification}
+    \begin{block}{2. Region Proposal Network (RPN)}
         \begin{itemize}
-            \item \textbf{RoI Align}: Maps proposals to appropriate FPN levels and extracts fixed 7$\times$7 feature grids without quantization loss.
-            \item \textbf{Detection Head}: Dual-branch MLP for 2-class classification (Face vs. Background) and bounding box regression.
+            \item Anchors generated at each spatial location across FPN scales.
+            \item Learns to classify (Object vs Background) and regress (BBox coordinates).
+            \item Filtering: NMS and Top-N selection maintains $\sim$300 high-quality proposals.
         \end{itemize}
     \end{block}
-
-    \begin{block}{3. Refinement \& Output}
+    \framebreak
+    \begin{block}{3. RoI Align & Detection Head}
         \begin{itemize}
-            \item \textbf{Soft-NMS}: Refines overlapping detections by decaying scores, preserving more true positives than standard NMS.
-            \item \textbf{Result}: Highly accurate face bounding boxes ready for subsequent feature extraction phases.
+            \item RoI Align: Extracts fixed 7$\times$7 features from proposals via bilinear interpolation, mapping to the optimal FPN level.
+            \item Head: Dual-branch MLP for classification and bbox refinement.
+        \end{itemize}
+    \end{block}
+    \begin{block}{4. Post-Processing}
+        \begin{itemize}
+            \item Score Thresholding: Filters low-confidence detections.
+            \item Soft-NMS: Decays scores of overlapping boxes to preserve true positives and maximize recall.
         \end{itemize}
     \end{block}
 \end{frame}
@@ -191,19 +197,35 @@
 % ==============================================================================
 \section{Phase 3: Unlabelled Graph Clustering via GCN}
 
-\begin{frame}{Phase 3: GCN Clustering for Pseudo-Labeling}
-    \begin{block}{Core Mechanism: Neighborhood Aggregation}
-        GCNs learn node representations by aggregating features from a node's local neighborhood in a graph, capturing structural relationships.
-        $$H^{(l+1)} = \sigma\left( \hat{D}^{-\frac{1}{2}} \hat{A} \hat{D}^{-\frac{1}{2}} H^{(l)} W^{(l)} \right)$$
+\begin{frame}[allowframebreaks]{Phase 3: GCN Clustering Pipeline}
+    \begin{block}{Core Intuition & Formula}
+        \begin{itemize}
+            \item GCNs learn on graph structures, aggregating neighborhood information.
+            \item Formula: $H^{(l+1)} = \sigma\left( \hat{D}^{-\frac{1}{2}} \hat{A} \hat{D}^{-\frac{1}{2}} H^{(l)} W^{(l)} \right)$
+        \end{itemize}
     \end{block}
-
-    \begin{block}{The 4-Step Clustering Workflow}
-        \begin{enumerate}
-            \item \textbf{Graph Construction}: Build a sparse $k$-NN graph based on cosine similarity between Phase 1 face embeddings.
-            \item \textbf{Feature Propagation}: 3-layer GCN (with residual connections) refines embeddings by analyzing multi-hop relationships.
-            \item \textbf{Link Prediction}: An MLP classifier predicts the probability of an edge (same identity) between node pairs.
-            \item \textbf{Clustering}: Applies a confidence threshold and extracts connected components to generate pseudo-labels for unlabeled data.
-        \end{enumerate}
+    \begin{block}{1. Graph Construction}
+        \begin{itemize}
+            \item Build $k$-NN graph based on cosine similarity of Phase 1 face embeddings.
+            \item Adjacency Matrix $\hat{A}$ includes self-loops for stability and symmetric normalization.
+        \end{itemize}
+    \end{block}
+    \framebreak
+    \begin{block}{2. Feature Propagation}
+        \begin{itemize}
+            \item 3-layer GCN with residual connections propagates features across neighbors to refine embeddings.
+        \end{itemize}
+    \end{block}
+    \begin{block}{3. Edge Prediction}
+        \begin{itemize}
+            \item MLP classifier takes combined node pair features to predict the probability of an identity match.
+        \end{itemize}
+    \end{block}
+    \begin{block}{4. Clustering}
+        \begin{itemize}
+            \item Apply confidence threshold to determine edge existence.
+            \item Connected components algorithm extracts clusters, assigning unique pseudo-labels.
+        \end{itemize}
     \end{block}
 \end{frame}
 
