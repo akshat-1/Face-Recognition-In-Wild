@@ -128,25 +128,26 @@
 % ==============================================================================
 \section{Phase 1: Feature Extraction (IResNet-100)}
 
-\begin{frame}[allowframebreaks]{Phase 1: IResNet-100 \& Curricular Loss}
-    \begin{block}{Deep Feature Representation}
+\begin{frame}[allowframebreaks]{Phase 1: IResNet-100, Curricular Loss, & BroadFace}
+    \begin{block}{IResNet-100 Backbone}
         \begin{itemize}
-            \item \textbf{IResNet-100 Backbone}: Crucial for identity preservation by avoiding vanishing gradients.
-            \item \textbf{Embedding Manifold}: Optimized for intra-class distance minimization and inter-class maximization.
-            \item \textbf{BroadFace}: Addresses long-tail distribution via memory-efficient identity prototypes.
+            \item Deep feature extractor: Ensures identity preservation via improved gradient flow.
+            \item Embedding Manifold: Maps faces to a discriminative space where intra-class distance is minimized and inter-class distance is maximized.
         \end{itemize}
     \end{block}
-
     \framebreak
-
-    \begin{block}{Curricular Learning Protocol}
-        $$\mathcal{L}_{\text{Curricular}} = -\log \frac{e^{s(\cos\theta_{y_i} - m(t))}}{e^{s(\cos\theta_{y_i} - m(t))} + \sum_{j \neq y_i} e^{s \cdot N(t, j) \cdot \cos\theta_j}}$$
-    \end{block}
-
-    \begin{block}{Research Insight}
+    \begin{block}{Curricular Learning}
         \begin{itemize}
-            \item Training parameter $t$ controls a curriculum shifting focus from easy to difficult samples.
-            \item Dynamic margin $m(t)$ and weight $N(t, j)$ penalize noisy samples only after stable embedding manifold.
+            \item Protocol: $\mathcal{L}_{\text{Curricular}} = -\log \frac{e^{s(\cos\theta_{y_i} - m(t))}}{e^{s(\cos\theta_{y_i} - m(t))} + \sum_{j \neq y_i} e^{s \cdot N(t, j) \cdot \cos\theta_j}}$
+            \item Strategy: Starts with easy samples, gradually introducing harder ones using parameter $t$ to control learning pace and margin $m(t)$.
+        \end{itemize}
+    \end{block}
+    \framebreak
+    \begin{block}{BroadFace: Handling Long-Tail Distributions}
+        \begin{itemize}
+            \item Challenge: Real-world datasets often suffer from long-tail distribution (few samples for many identities).
+            \item Mechanism: Utilizes memory-efficient identity prototypes to represent rare identities better.
+            \item Benefit: Enhances robust feature learning for under-represented classes by aggregating broader context into the embedding process.
         \end{itemize}
     \end{block}
 \end{frame}
