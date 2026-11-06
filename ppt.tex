@@ -198,34 +198,41 @@
 % ==============================================================================
 \section{Phase 3: Unlabelled Graph Clustering via GCN}
 
-\begin{frame}[allowframebreaks]{Phase 3: GCN Clustering Pipeline}
-    \begin{block}{Core Intuition & Formula}
+\begin{frame}[allowframebreaks]{Phase 3: Deep Dive into GCN Clustering}
+    \begin{block}{Theoretical Foundation}
         \begin{itemize}
-            \item GCNs learn on graph structures, aggregating neighborhood information.
-            \item Formula: $H^{(l+1)} = \sigma\left( \hat{D}^{-\frac{1}{2}} \hat{A} \hat{D}^{-\frac{1}{2}} H^{(l)} W^{(l)} \right)$
-        \end{itemize}
-    \end{block}
-    \begin{block}{1. Graph Construction}
-        \begin{itemize}
-            \item Build $k$-NN graph based on cosine similarity of Phase 1 face embeddings.
-            \item Adjacency Matrix $\hat{A}$ includes self-loops for stability and symmetric normalization.
+            \item GCN Operation: Aggregates features from 1-hop neighbors, refined by learned weight matrix $W^{(l)}$.
+            \item Normalization: Uses symmetric normalized adjacency ($\hat{D}^{-1/2}\hat{A}\hat{D}^{-1/2}$) to ensure numerical stability and scale invariance across node degrees.
         \end{itemize}
     \end{block}
     \framebreak
-    \begin{block}{2. Feature Propagation}
+    \begin{block}{1. Graph Construction (Build)}
         \begin{itemize}
-            \item 3-layer GCN with residual connections propagates features across neighbors to refine embeddings.
+            \item KNN Graph: Computes all-pair cosine similarity, keeps top-$k$ connections.
+            \item Self-Loops: $\hat{A} = A + I$ ensures node preserves its own identity during aggregation.
+            \item Symmetric Normalization: Essential for Laplacian-based stability in graph convolutions.
         \end{itemize}
     \end{block}
-    \begin{block}{3. Edge Prediction}
+    \framebreak
+    \begin{block}{2. Feature Propagation (3-Layer GCN)}
         \begin{itemize}
-            \item MLP classifier takes combined node pair features to predict the probability of an identity match.
+            \item Architecture: 3 successive Graph Convolutional layers.
+            \item Residual Skip Connection: $h_{out} = \text{GCN}_3(h_2) + h_1$ mitigates vanishing gradients in deep graph structures, preserving crucial feature information.
         \end{itemize}
     \end{block}
-    \begin{block}{4. Clustering}
+    \framebreak
+    \begin{block}{3. Link Prediction (Edge Classification)}
         \begin{itemize}
-            \item Apply confidence threshold to determine edge existence.
-            \item Connected components algorithm extracts clusters, assigning unique pseudo-labels.
+            \item Input Pair Features: Concatenates node pair features, absolute difference, and element-wise product: $e_{ij} = [h_i, h_j, |h_i-h_j|, h_i \odot h_j]$.
+            \item MLP Classifier: Maps these combined features to a probability score $P(edge_{ij} | h_i, h_j)$.
+        \end{itemize}
+    \end{block}
+    \framebreak
+    \begin{block}{4. Clustering Mechanism}
+        \begin{itemize}
+            \item Thresholding: Edges kept if $P(edge_{ij}) > \tau$ (e.g., 0.75).
+            \item Connected Components: Efficient traversal (BFS/DFS) groups high-confidence connected nodes.
+            \item Result: Each component is assigned a single, coherent pseudo-label, effectively clustering unlabeled face images.
         \end{itemize}
     \end{block}
 \end{frame}
