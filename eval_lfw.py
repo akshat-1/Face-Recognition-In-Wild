@@ -13,6 +13,10 @@ Inputs
                   mismatched pairs).
 ``--images_dir``  directory laid out as ``<name>/<name>_<4-digit index>.jpg``.
 
+Use a benchmark that does not overlap the training data. This project's
+``name_label`` stream contains LFW, so LFW pairs would measure memorisation;
+CFP-FP or AgeDB-30 pairs in the same format are the honest choice.
+
 The backbone expects tight 112x112 face crops. Raw LFW images are 250x250
 with the face in the centre, so ``--center_crop 0.56`` (default) crops the
 central 140 px before resizing; pass ``--center_crop 1.0`` for pre-aligned

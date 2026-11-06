@@ -464,7 +464,7 @@ real numbers; each needs the trained `weights/` bundle.
 | What | Command | Metric |
 |---|---|---|
 | Phase 0 detector | `python eval_widerface.py --image_dir WIDER_val/images --gt_file wider_face_split/wider_face_val_bbx_gt.txt` | WIDER FACE AP on Easy / Medium / Hard |
-| Recognition backbone | `python eval_lfw.py --weights_dir weights --pairs lfw/pairs.txt --images_dir lfw/lfw-deepfunneled` | LFW 10-fold verification accuracy |
+| Recognition backbone | `python eval_lfw.py --weights_dir weights --pairs cfp_fp/pairs.txt --images_dir cfp_fp/images` | 10-fold verification accuracy on a benchmark **not** used in training |
 | Full open-set system | `python calibrate_open_set.py --weights_dir weights --gallery_dir Face_Dataset/name_label --known_dir HELDOUT_KNOWN --unknown_dir HELDOUT_UNKNOWN` | identification rate vs false-accept rate, plus recommended thresholds |
 
 What to expect, for orientation only:
@@ -475,8 +475,13 @@ What to expect, for orientation only:
   architecture.
 - Public IResNet-100 models trained on millions of images (MS1M, Glint360K)
   score above 99% on LFW. This backbone is trained **from random
-  initialisation** on a much smaller identity set, so its LFW accuracy is
-  likely to be well below that. Run `eval_lfw.py` before making any claim.
+  initialisation** on a much smaller identity set, so expect clearly lower
+  verification accuracy. Run `eval_lfw.py` before making any claim.
+- **Do not report LFW accuracy for this model.** The `name_label` training
+  stream includes LFW and masked LFW, so LFW pairs are training images and the
+  score would be inflated. Use a benchmark with no overlap, such as CFP-FP or
+  AgeDB-30 (`eval_lfw.py` accepts any LFW-format pairs file), or a split of
+  identities held out from training.
 - Open-set identification on wild images depends mostly on gallery quality
   and the chosen false-accept budget. Always report identification rate
   together with the false-accept rate used.
@@ -497,7 +502,7 @@ best identification rate within `--max_false_accept` (default 1%).
    only box-resized. A RetinaFace/SCRFD-style landmark head would enable the
    existing five-point alignment and pose gating, which typically adds several
    points of recognition accuracy on wild images.
-3. **Score a held-out split during training.** Phase 1 should report LFW,
+3. **Score a held-out split during training.** Phase 1 should report held-out-identity,
    CFP-FP or AgeDB verification accuracy each epoch and keep the best
    checkpoint, rather than only the latest.
 4. **Calibrate and report.** Run the three evaluators above and record the
