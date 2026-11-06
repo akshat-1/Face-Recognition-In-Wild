@@ -1,0 +1,222 @@
+\documentclass[t]{beamer}
+
+% --- Packages ---
+\usepackage{tikz}
+\usetikzlibrary{patterns, arrows.meta, decorations.markings, positioning, shapes.geometric}
+\usepackage{graphicx}
+\usepackage{booktabs}
+\usepackage{natbib}
+\usepackage{amsmath}
+\usepackage{amssymb}
+
+% --- Theme ---
+\usetheme{Madrid}
+
+% --- Colors ---
+\definecolor{MyOrange}{RGB}{230, 85, 10}
+\definecolor{NavDarkBlue}{RGB}{15, 32, 67}
+\definecolor{CodeBg}{RGB}{245, 245, 245}
+
+\usecolortheme[named=MyOrange]{structure}
+
+\setbeamercolor{palette primary}{bg=MyOrange,fg=white}
+\setbeamercolor{palette secondary}{bg=MyOrange!85!black,fg=white}
+\setbeamercolor{palette tertiary}{bg=MyOrange!70!black,fg=white}
+\setbeamercolor{titlelike}{parent=palette primary}
+\setbeamercolor{block title}{bg=MyOrange!90!black,fg=white}
+\setbeamercolor{block body}{bg=MyOrange!5!white,fg=black}
+
+% --- Fonts & Formatting ---
+\setbeamerfont{caption}{size=\footnotesize}
+\setbeamertemplate{navigation symbols}{}
+\setbeamertemplate{footline}[frame number]
+
+% --- Title Info ---
+\title[Face Recognition In The Wild]{FACE RECOGNITION IN THE WILD: 4-PHASE ARCHITECTURE}
+\subtitle{Faster RCNN, IResNet-100, Anet, \& GCN-Clustering Pipeline}
+\author[Face Recognition Team]{Face Recognition In Wild Research Group}
+\institute[DeepMind / Jcode]{Autonomous Face Recognition Systems}
+\date{\today}
+
+\begin{document}
+
+% ==============================================================================
+% Title Slide
+% ==============================================================================
+\begin{frame}
+    \titlepage
+\end{frame}
+
+% ==============================================================================
+% Table of Contents
+% ==============================================================================
+\begin{frame}{Table of Contents}
+    \tableofcontents
+\end{frame}
+
+% ==============================================================================
+% SECTION: ARCHITECTURE OVERVIEW
+% ==============================================================================
+\section{Architecture Overview}
+
+\begin{frame}{Overall Architecture Phases}
+    \begin{block}{The 4-Phase Pipeline}
+        \begin{itemize}
+            \item \textbf{Phase 0}: Fine-tune Faster RCNN trained on COCO dataset for object detection.
+            \item \textbf{Phase 1}: Feature extraction with IResNet-100, Curricular Loss, and BroadFace.
+            \item \textbf{Phase 2}: Anet using multiple kernel sizes to capture global and local features.
+            \item \textbf{Phase 3}: Unlabelled image pseudo-labeling, Graph construction, and GCN Clustering.
+        \end{itemize}
+    \end{block}
+
+    \vspace{0.5cm}
+
+    \begin{center}
+    \resizebox{0.9\textwidth}{!}{
+    \begin{tikzpicture}[node distance=1.2cm, auto, >=stealth]
+        \tikzstyle{block} = [rectangle, draw, fill=blue!10, text width=2.5cm, text centered, rounded corners, minimum height=1cm, font=\scriptsize\bfseries]
+
+        \node [block] (p0) {Phase 0\\Faster RCNN};
+        \node [block, right=0.5cm of p0] (p1) {Phase 1\\IResNet-100};
+        \node [block, right=0.5cm of p1] (p2) {Phase 2\\Anet};
+        \node [block, right=0.5cm of p2] (p3) {Phase 3\\GCN Cluster};
+
+        \draw [->, thick] (p0) -- (p1);
+        \draw [->, thick] (p1) -- (p2);
+        \draw [->, thick] (p2) -- (p3);
+    \end{tikzpicture}
+    }
+    \end{center}
+\end{frame}
+
+% ==============================================================================
+% SECTION: PHASE 0 - FASTER RCNN
+% ==============================================================================
+\section{Phase 0: Faster R-CNN Fine-Tuning}
+
+\begin{frame}{Phase 0: Faster R-CNN Detection Pipeline}
+    \begin{block}{1. Feature Extraction \& Proposal Generation}
+        \begin{itemize}
+            \item \textbf{Backbone}: ResNet-50 with Feature Pyramid Network (FPN) extracts multi-scale feature maps (P2--P6).
+            \item \textbf{RPN}: Generates region proposals across scales, filtering them to the top 300 candidates based on objectness scores.
+        \end{itemize}
+    \end{block}
+
+    \begin{block}{2. ROI Alignment \& Classification}
+        \begin{itemize}
+            \item \textbf{RoI Align}: Maps proposals to appropriate FPN levels and extracts fixed 7$\times$7 feature grids without quantization loss.
+            \item \textbf{Detection Head}: Dual-branch MLP for 2-class classification (Face vs. Background) and bounding box regression.
+        \end{itemize}
+    \end{block}
+
+    \begin{block}{3. Refinement \& Output}
+        \begin{itemize}
+            \item \textbf{Soft-NMS}: Refines overlapping detections by decaying scores, preserving more true positives than standard NMS.
+            \item \textbf{Result}: Highly accurate face bounding boxes ready for subsequent feature extraction phases.
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+% ==============================================================================
+% SECTION: PHASE 1 - FEATURE EXTRACTION
+% ==============================================================================
+\section{Phase 1: Feature Extraction (IResNet-100)}
+
+\begin{frame}[allowframebreaks]{Phase 1: IResNet-100 \& Curricular Loss}
+    \begin{block}{Deep Feature Representation}
+        \begin{itemize}
+            \item \textbf{IResNet-100 Backbone}: Crucial for identity preservation by avoiding vanishing gradients.
+            \item \textbf{Embedding Manifold}: Optimized for intra-class distance minimization and inter-class maximization.
+            \item \textbf{BroadFace}: Addresses long-tail distribution via memory-efficient identity prototypes.
+        \end{itemize}
+    \end{block}
+
+    \framebreak
+
+    \begin{block}{Curricular Learning Protocol}
+        $$\mathcal{L}_{\text{Curricular}} = -\log \frac{e^{s(\cos\theta_{y_i} - m(t))}}{e^{s(\cos\theta_{y_i} - m(t))} + \sum_{j \neq y_i} e^{s \cdot N(t, j) \cdot \cos\theta_j}}$$
+    \end{block}
+
+    \begin{block}{Research Insight}
+        \begin{itemize}
+            \item Training parameter $t$ controls a curriculum shifting focus from easy to difficult samples.
+            \item Dynamic margin $m(t)$ and weight $N(t, j)$ penalize noisy samples only after stable embedding manifold.
+        \end{itemize}
+    \end{block}
+\end{frame}
+
+% ==============================================================================
+% SECTION: PHASE 2 - ANET
+% ==============================================================================
+\section{Phase 2: Anet Feature Refinement}
+
+\begin{frame}{Phase 2: Anet - Multi-Scale Feature Fusion}
+    \begin{columns}
+        \begin{column}{0.5\textwidth}
+            \begin{block}{Theoretical Motivation}
+                \begin{itemize}
+                    \item \textbf{Problem}: Standard 512D embeddings can lose fine-grained spatial information.
+                    \item \textbf{Solution}: Multi-scale refinement stage.
+                    \item \textbf{Mechanism}: Parallel paths with Large (Global) and Small (Local) kernels.
+                    \item \textbf{Concatenation}: Contextually richer representation.
+                \end{itemize}
+            \end{block}
+        \end{column}
+        \begin{column}{0.5\textwidth}
+            \begin{center}
+            \resizebox{0.9\textwidth}{!}{
+            \begin{tikzpicture}[node distance=1.2cm, auto, >=stealth]
+                \tikzstyle{block} = [rectangle, draw, fill=green!15, text width=2.4cm, text centered, rounded corners, minimum height=0.9cm, font=\scriptsize\bfseries]
+
+                \node [block] (in) {Phase 1 Feature};
+                \node [block, above=0.5cm of in] (k1) {Global Kernel};
+                \node [block, below=0.5cm of in] (k2) {Local Kernel};
+                \node [block, right=2cm of in] (concat) {Concat};
+                \node [block, right=0.5cm of concat] (out) {Refined Embedding};
+
+                \draw [->, thick] (in) |- (k1);
+                \draw [->, thick] (in) |- (k2);
+                \draw [->, thick] (k1) -| (concat);
+                \draw [->, thick] (k2) -| (concat);
+                \draw [->, thick] (concat) -- (out);
+            \end{tikzpicture}
+            }
+            \end{center}
+        \end{column}
+    \end{columns}
+\end{frame}
+
+% ==============================================================================
+% SECTION: PHASE 3 - GCN CLUSTERING
+% ==============================================================================
+\section{Phase 3: Unlabelled Graph Clustering via GCN}
+
+\begin{frame}{Phase 3: GCN Clustering for Pseudo-Labeling}
+    \begin{block}{Core Mechanism: Neighborhood Aggregation}
+        GCNs learn node representations by aggregating features from a node's local neighborhood in a graph, capturing structural relationships.
+        $$H^{(l+1)} = \sigma\left( \hat{D}^{-\frac{1}{2}} \hat{A} \hat{D}^{-\frac{1}{2}} H^{(l)} W^{(l)} \right)$$
+    \end{block}
+
+    \begin{block}{The 4-Step Clustering Workflow}
+        \begin{enumerate}
+            \item \textbf{Graph Construction}: Build a sparse $k$-NN graph based on cosine similarity between Phase 1 face embeddings.
+            \item \textbf{Feature Propagation}: 3-layer GCN (with residual connections) refines embeddings by analyzing multi-hop relationships.
+            \item \textbf{Link Prediction}: An MLP classifier predicts the probability of an edge (same identity) between node pairs.
+            \item \textbf{Clustering}: Applies a confidence threshold and extracts connected components to generate pseudo-labels for unlabeled data.
+        \end{enumerate}
+    \end{block}
+\end{frame}
+
+% ==============================================================================
+% Conclusion Slide
+% ==============================================================================
+\begin{frame}
+    \centering
+    \vfill
+    \Huge \textcolor{MyOrange}{\textbf{Thank You}} \\
+    \vspace{0.5cm}
+    \Large \textbf{Questions \& Discussion}
+    \vfill
+\end{frame}
+
+\end{document}
