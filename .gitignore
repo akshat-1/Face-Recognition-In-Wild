@@ -13,7 +13,6 @@ list_attr_celeba.csv
 list_bbox_celeba.csv
 list_eval_partition.csv
 list_landmarks_align_celeba.csv
-Face_Dataset/
 Test_dataser/
 WIDER_val/
 wider_face_split/
