@@ -37,6 +37,7 @@ from losses.broadface_queue import BroadFaceCurricularLoss
 from models.anet_attribute import ANetAttributeParser
 from models.backbone import FasterRCNNBackbone, ResNet100Backbone, vit_face_base
 from models.detector import TorchvisionFaceDetector
+from models.ddrc_solver import DDRCClassifier
 from models.gcn_cluster import GCNLinkPredictor
 
 
@@ -113,9 +114,10 @@ def build_identity_dataset(cfg: SystemConfig, is_train: bool):
 def load_backbone_for_adaptation(cfg: SystemConfig, device: torch.device):
     """Load an existing recognition artifact without retraining Phase 1."""
     dataset = build_identity_dataset(cfg, is_train=False)
+    # Prioritize clean Phase 1 recognition_backbone.pt over phase3_adapted_backbone.pt
     candidates = [
-        os.path.join(cfg.train.checkpoint_dir, "phase3_adapted_backbone.pt"),
         os.path.join(cfg.train.checkpoint_dir, "recognition_backbone.pt"),
+        os.path.join(cfg.train.checkpoint_dir, "phase3_adapted_backbone.pt"),
     ]
     checkpoint_path = next((path for path in candidates if os.path.isfile(path)), None)
     if checkpoint_path is None:
@@ -123,7 +125,7 @@ def load_backbone_for_adaptation(cfg: SystemConfig, device: torch.device):
             f"No recognition checkpoint found in {cfg.train.checkpoint_dir}; "
             "run --phase recognition first."
         )
-    checkpoint = torch.load(checkpoint_path, map_location=device)
+    checkpoint = torch.load(checkpoint_path, map_location=device, weights_only=False)
     if checkpoint.get("schema_version") != 2 or checkpoint.get("kind") != "recognition_backbone":
         raise ValueError(f"Not a recognition checkpoint: {checkpoint_path}")
     saved_config = checkpoint.get("model_config", {})
@@ -140,7 +142,7 @@ def load_backbone_for_adaptation(cfg: SystemConfig, device: torch.device):
         raise ValueError(f"Recognition checkpoint contains no backbone state: {checkpoint_path}")
     backbone.load_state_dict({key.removeprefix("module."): value for key, value in state.items()})
     backbone.eval()
-    live_print(f"Loaded recognition backbone for adaptation from {checkpoint_path}")
+    live_print(f"Loaded recognition backbone from {checkpoint_path}")
     return backbone, len(dataset.class_to_idx)
 
 
@@ -208,6 +210,69 @@ def _detection_collate(batch):
     return list(images), list(targets)
 
 
+def enroll_final_gallery(cfg: SystemConfig, backbone: nn.Module, device: torch.device):
+    """Enroll the final trained recognition gallery using ONLY name_label identities."""
+    dataset = WildFaceDataset(
+        root_dir=cfg.dataset.train_data_dir,
+        is_train=False,
+        image_size=cfg.dataset.image_size,
+        allow_synthetic=cfg.dataset.allow_synthetic_fixtures,
+    )
+    loader = DataLoader(
+        dataset,
+        batch_size=cfg.train.batch_size,
+        shuffle=False,
+        num_workers=cfg.dataset.num_workers,
+    )
+
+    embeddings = []
+    labels = []
+
+    raw_backbone = backbone.module if hasattr(backbone, "module") else backbone
+    raw_backbone.eval()
+
+    with torch.no_grad():
+        for images, batch_labels, _ in loader:
+            embeddings.append(raw_backbone(images.to(device)).cpu())
+            labels.append(batch_labels)
+
+    embeddings = torch.cat(embeddings, dim=0)
+    labels = torch.cat(labels, dim=0).long()
+
+    idx_to_class = {v: k for k, v in dataset.class_to_idx.items()}
+    unique_labels = torch.unique(labels, sorted=True)
+    class_names = [idx_to_class[int(i.item())] for i in unique_labels]
+
+    classifier = DDRCClassifier(
+        feature_dim=cfg.model.embedding_dim,
+        num_classes=len(class_names),
+    ).to(device)
+
+    classifier.enroll_gallery(embeddings, labels, class_names=class_names)
+
+    save_path = os.path.join(cfg.train.checkpoint_dir, "final_gallery.pt")
+    torch.save({
+        "classifier_state": classifier.state_dict(),
+        "class_to_idx": dataset.class_to_idx,
+        "class_names": class_names,
+        "num_classes": len(class_names),
+        "atoms_per_class": classifier.atoms_per_class,
+        "embeddings": embeddings,
+        "labels": labels,
+    }, save_path)
+
+    stale_cache = os.path.join(cfg.train.checkpoint_dir, "gallery_embeddings.pt")
+    if os.path.isfile(stale_cache):
+        try:
+            os.remove(stale_cache)
+        except OSError:
+            pass
+
+    live_print(
+        f"Final gallery enrolled ({len(class_names)} active identities out of "
+        f"{len(dataset.class_to_idx)} folders, {embeddings.shape[0]} samples) -> {save_path}"
+    )
+
 def train_phase0_face_detector(
     cfg: SystemConfig,
     device: torch.device,
@@ -233,9 +298,6 @@ def train_phase0_face_detector(
         is_train=True,
         image_size=cfg.dataset.image_size,
         detection_mode=True,
-        # AQUA provides train/test/validate directories. The requested full
-        # model uses all of them; `detector_split=train` is available when an
-        # unbiased held-out evaluation is needed instead.
         split=None if cfg.train.detector_split == "all" else "train",
         include_wider=include_wider,
     )
@@ -252,6 +314,8 @@ def train_phase0_face_detector(
     checkpoint_dir = cfg.train.checkpoint_dir
     os.makedirs(checkpoint_dir, exist_ok=True)
     checkpoint_path = os.path.join(checkpoint_dir, "face_detector.pt")
+    if rank == 0:
+        live_print(f"DEBUG: Phase 0 looking for detector at {checkpoint_path}")
     existing_checkpoint = os.path.isfile(checkpoint_path) and not force_retrain
     detector = TorchvisionFaceDetector(
         checkpoint_path=checkpoint_path if existing_checkpoint else None,
@@ -402,9 +466,11 @@ def train_phase1_backbone_curricular(
     os.makedirs(checkpoint_dir, exist_ok=True)
     final_path = os.path.join(checkpoint_dir, "recognition_backbone.pt")
     resume_path = os.path.join(checkpoint_dir, "latest_backbone.pt")
+    if rank == 0:
+        live_print(f"DEBUG: Phase 1 looking for final backbone at {final_path}, latest at {resume_path}")
 
     if os.path.isfile(final_path) and not force_retrain and not resume:
-        checkpoint = torch.load(final_path, map_location=device)
+        checkpoint = torch.load(final_path, map_location=device, weights_only=False)
         state = checkpoint.get("backbone_state", checkpoint.get("backbone"))
         if state is None:
             raise ValueError(f"Invalid recognition checkpoint: {final_path}")
@@ -414,7 +480,7 @@ def train_phase1_backbone_curricular(
         return backbone, num_classes
 
     if resume and os.path.isfile(resume_path):
-        checkpoint = torch.load(resume_path, map_location=device)
+        checkpoint = torch.load(resume_path, map_location=device, weights_only=False)
         backbone.load_state_dict(checkpoint["backbone_state"])
         loss_fn.load_state_dict(checkpoint["broadface_loss_fn"])
         optimizer.load_state_dict(checkpoint["optimizer"])
@@ -526,7 +592,6 @@ class _CombinedIdentityDataset(Dataset):
         self.transform = get_default_transform(image_size, is_train=True)
         self.samples = []
         skipped = 0
-        cached_valid = None
         if validation_cache_path and os.path.isfile(validation_cache_path):
             try:
                 cached = torch.load(validation_cache_path, map_location="cpu", weights_only=False)
@@ -600,13 +665,126 @@ class _CombinedIdentityDataset(Dataset):
         return self.transform(image), int(label), bool(is_pseudo), float(sample_weight)
 
 
-def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_classes: int, device: torch.device, **kwargs):
-    """Adapt recognition using explicit face crops or detector-approved scenes.
+def _initialize_phase3_loss_weights(
+    cfg: SystemConfig,
+    joint_loss_fn: BroadFaceCurricularLoss,
+    num_labeled_classes: int,
+    device: torch.device,
+) -> None:
+    """Copy trained Phase 1 classifier weights into joint_loss_fn so backbone isn't corrupted."""
+    phase1_path = os.path.join(cfg.train.checkpoint_dir, "recognition_backbone.pt")
+    if not os.path.isfile(phase1_path):
+        return
+    try:
+        ckpt = torch.load(phase1_path, map_location=device, weights_only=False)
+        loss_state = ckpt.get("broadface_loss_fn", {})
+        saved_weight = loss_state.get("weight")
+        if saved_weight is not None and saved_weight.ndim == 2:
+            copy_rows = min(num_labeled_classes, saved_weight.shape[0], joint_loss_fn.weight.shape[0])
+            with torch.no_grad():
+                joint_loss_fn.weight[:copy_rows].copy_(saved_weight[:copy_rows].to(device))
+            live_print(f"[Phase 3] Restored {copy_rows} Phase 1 class centers into joint_loss_fn")
+    except Exception as exc:
+        live_print(f"[Phase 3] Warning: could not copy Phase 1 classifier weights: {exc}")
 
-    Unlabeled scenes never become identity or bounding-box ground truth. When
-    ``unlabeled_mode=detected_scenes``, the trained detector first materializes
-    high-confidence face crops and only those crops enter GCN adaptation.
-    """
+
+def _finetune_phase3_joint(
+    cfg: SystemConfig,
+    raw_backbone: nn.Module,
+    joint_dataset: Dataset,
+    num_labeled_classes: int,
+    total_classes: int,
+    device: torch.device,
+) -> BroadFaceCurricularLoss:
+    """Warm up pseudo-class centers with frozen backbone, then gently adapt."""
+    joint_loss_fn = BroadFaceCurricularLoss(
+        in_features=cfg.model.embedding_dim,
+        num_classes=total_classes,
+        scale_factor=cfg.loss.scale,
+        margin=cfg.loss.margin,
+        alpha=cfg.loss.ema_alpha,
+        queue_size=min(cfg.loss.queue_size, 4096),
+        compensate=True,
+        sync_curriculum=False,
+    ).to(device)
+    _initialize_phase3_loss_weights(cfg, joint_loss_fn, num_labeled_classes, device)
+
+    if len(joint_dataset) < cfg.train.batch_size:
+        raise ValueError(
+            f"Adaptation dataset has {len(joint_dataset)} samples, fewer than batch_size={cfg.train.batch_size}"
+        )
+    joint_loader = DataLoader(
+        joint_dataset,
+        batch_size=cfg.train.batch_size,
+        shuffle=True,
+        num_workers=cfg.dataset.num_workers,
+        drop_last=True,
+    )
+
+    # Step A: 1 epoch warmup of ONLY the classifier head (backbone frozen in eval mode)
+    raw_backbone.eval()
+    for param in raw_backbone.parameters():
+        param.requires_grad = False
+    head_optimizer = optim.SGD(
+        joint_loss_fn.parameters(),
+        lr=cfg.train.learning_rate * 0.1,
+        momentum=cfg.train.momentum,
+        weight_decay=cfg.train.weight_decay,
+    )
+    for images, labels, is_pseudo, sample_weights in joint_loader:
+        images, labels = images.to(device), labels.to(device)
+        is_pseudo = is_pseudo.bool().to(device)
+        sample_weights = sample_weights.to(device)
+        head_optimizer.zero_grad(set_to_none=True)
+        with torch.no_grad():
+            embeddings = raw_backbone(images)
+        labelled_mask = ~is_pseudo
+        pseudo_mask = is_pseudo
+        total_loss = joint_loss_fn.weight.sum() * 0.0
+        if labelled_mask.any():
+            total_loss = total_loss + joint_loss_fn(embeddings[labelled_mask], labels[labelled_mask])
+        if pseudo_mask.any():
+            pseudo_loss = joint_loss_fn(embeddings[pseudo_mask], labels[pseudo_mask])
+            total_loss = total_loss + cfg.loss.lambda_semi * sample_weights[pseudo_mask].mean() * pseudo_loss
+        total_loss.backward()
+        head_optimizer.step()
+
+    # Step B: Unfreeze backbone with very small LR (0.01x) and frozen BN statistics
+    for param in raw_backbone.parameters():
+        param.requires_grad = True
+    raw_backbone.eval()
+    joint_optimizer = optim.SGD(
+        [
+            {"params": raw_backbone.parameters(), "lr": cfg.train.learning_rate * 0.01},
+            {"params": joint_loss_fn.parameters(), "lr": cfg.train.learning_rate * 0.05},
+        ],
+        momentum=cfg.train.momentum,
+        weight_decay=cfg.train.weight_decay,
+    )
+    for _ in range(min(2, cfg.train.epochs)):
+        for images, labels, is_pseudo, sample_weights in joint_loader:
+            images, labels = images.to(device), labels.to(device)
+            is_pseudo = is_pseudo.bool().to(device)
+            sample_weights = sample_weights.to(device)
+            joint_optimizer.zero_grad(set_to_none=True)
+            embeddings = raw_backbone(images)
+            labelled_mask = ~is_pseudo
+            pseudo_mask = is_pseudo
+            total_loss = embeddings.sum() * 0.0
+            if labelled_mask.any():
+                total_loss = total_loss + joint_loss_fn(embeddings[labelled_mask], labels[labelled_mask])
+            if pseudo_mask.any():
+                pseudo_loss = joint_loss_fn(embeddings[pseudo_mask], labels[pseudo_mask])
+                total_loss = total_loss + cfg.loss.lambda_semi * sample_weights[pseudo_mask].mean() * pseudo_loss
+            total_loss.backward()
+            joint_optimizer.step()
+            joint_loss_fn.enqueue(embeddings.detach(), labels)
+    raw_backbone.eval()
+    return joint_loss_fn
+
+
+def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_classes: int, device: torch.device, **kwargs):
+    """Adapt recognition using explicit face crops or detector-approved scenes."""
     rank = kwargs.get("rank", 0)
     if not cfg.dataset.unlabeled_data_dir:
         if rank == 0:
@@ -640,9 +818,6 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
     raw_backbone = backbone.module if hasattr(backbone, "module") else backbone
     raw_backbone.eval()
 
-    # Cache the embedding tensor so Phase 3 doesn't recompute 378K backbone
-    # forward passes on every run. Invalidated automatically when the
-    # detector crop cache changes.
     embedding_cache_path = os.path.join(cfg.train.checkpoint_dir, "phase3_embeddings.pt")
     detector_cache_path = os.path.join(cfg.train.checkpoint_dir, "phase3_detector_crops.pt")
     detector_cache_mtime = os.path.getmtime(detector_cache_path) if os.path.isfile(detector_cache_path) else 0.0
@@ -680,10 +855,10 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
             }, embedding_cache_path)
             live_print(f"[Phase 3] Saved cached embeddings: {embedding_cache_path} ({all_embeddings.shape[0]} samples)")
 
-    # Load cached pseudo-labels if available, skipping the expensive GCN
-    # clustering step on subsequent runs.
     pseudo_labels_cache_path = os.path.join(cfg.train.checkpoint_dir, "phase3_pseudo_labels.pt")
     labelled = build_identity_dataset(cfg, is_train=False)
+    predictor = None
+
     if os.path.isfile(pseudo_labels_cache_path):
         try:
             cached = torch.load(pseudo_labels_cache_path, map_location="cpu", weights_only=False)
@@ -693,168 +868,42 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
                 num_labeled_classes = cached["num_labeled_classes"]
                 if rank == 0:
                     live_print(f"[Phase 3] Loaded cached pseudo-labels: {pseudo_labels_cache_path} ({int(active.sum().item())} active clusters)")
-                # Skip GCN training and clustering entirely
-                active_indices = torch.where(active.cpu())[0].tolist()
-                pseudo_samples = []
-                for index in active_indices:
-                    if unlabeled_mode == "detected_scenes":
-                        path, box, score = dataset.samples[index]
-                        pseudo_samples.append((path, box, int(pseudo_labels[index].item()), True, score))
-                    elif dataset.samples[index] != "dummy_unlabeled":
-                        pseudo_samples.append((dataset.samples[index], int(pseudo_labels[index].item()), True))
-                labelled_samples = []
-                for path, box, label in labelled.samples:
-                    pixel_box = None
-                    if box is not None:
-                        try:
-                            with Image.open(path) as image:
-                                image_width, image_height = image.size
-                            xc, yc, box_width, box_height = box
-                            pixel_box = (
-                                max(0, int((xc - box_width / 2.0) * image_width)),
-                                max(0, int((yc - box_height / 2.0) * image_height)),
-                                min(image_width, int((xc + box_width / 2.0) * image_width)),
-                                min(image_height, int((yc + box_height / 2.0) * image_height)),
-                            )
-                        except Exception as exc:
-                            raise RuntimeError(f"Could not prepare WIDER adaptation crop {path}: {exc}") from exc
-                    labelled_samples.append((path, pixel_box, label, False, 1.0))
-                joint_dataset = _CombinedIdentityDataset(
-                    labelled_samples + pseudo_samples,
-                    cfg.dataset.image_size,
-                    validation_cache_path=os.path.join(cfg.train.checkpoint_dir, "phase3_image_validation.pt"),
-                )
-                if len(joint_dataset) and pseudo_samples:
-                    pseudo_class_ids = [
-                        sample[2] if len(sample) == 5 else sample[1]
-                        for sample in pseudo_samples
-                    ]
-                    total_classes = max(num_labeled_classes, max(pseudo_class_ids) + 1)
-                    if rank == 0:
-                        live_print("[Phase 3] Proceeding to fine-tuning with cached pseudo-labels")
-                    # Jump directly to fine-tuning
-                    joint_loss_fn = BroadFaceCurricularLoss(
-                        in_features=cfg.model.embedding_dim,
-                        num_classes=total_classes,
-                        scale_factor=cfg.loss.scale,
-                        margin=cfg.loss.margin,
-                        alpha=cfg.loss.ema_alpha,
-                        queue_size=min(cfg.loss.queue_size, 4096),
-                        compensate=True,
-                        sync_curriculum=False,
-                    ).to(device)
-                    joint_optimizer = optim.SGD(
-                        list(raw_backbone.parameters()) + list(joint_loss_fn.parameters()),
-                        lr=cfg.train.learning_rate * 0.1,
-                        momentum=cfg.train.momentum,
-                        weight_decay=cfg.train.weight_decay,
-                    )
-                    if len(joint_dataset) < cfg.train.batch_size:
-                        raise ValueError(
-                            f"Adaptation dataset has {len(joint_dataset)} samples, fewer than batch_size={cfg.train.batch_size}"
-                        )
-                    joint_loader = DataLoader(
-                        joint_dataset,
-                        batch_size=cfg.train.batch_size,
-                        shuffle=True,
-                        num_workers=cfg.dataset.num_workers,
-                        drop_last=True,
-                    )
-                    raw_backbone.train()
-                    for epoch in range(min(3, cfg.train.epochs)):
-                        for images, labels, is_pseudo, sample_weights in joint_loader:
-                            images, labels = images.to(device), labels.to(device)
-                            is_pseudo = is_pseudo.bool().to(device)
-                            sample_weights = sample_weights.to(device)
-                            joint_optimizer.zero_grad(set_to_none=True)
-                            embeddings = raw_backbone(images)
-                            labelled_mask = ~is_pseudo
-                            pseudo_mask = is_pseudo
-                            total_loss = embeddings.sum() * 0.0
-                            if labelled_mask.any():
-                                total_loss = total_loss + joint_loss_fn(embeddings[labelled_mask], labels[labelled_mask])
-                            if pseudo_mask.any():
-                                pseudo_loss = joint_loss_fn(embeddings[pseudo_mask], labels[pseudo_mask])
-                                total_loss = total_loss + cfg.loss.lambda_semi * sample_weights[pseudo_mask].mean() * pseudo_loss
-                            total_loss.backward()
-                            joint_optimizer.step()
-                            to_enqueue = embeddings.detach()
-                            joint_loss_fn.enqueue(to_enqueue, labels)
-                    raw_backbone.eval()
-                    checkpoint_path = os.path.join(cfg.train.checkpoint_dir, "phase3_semi_gcn_predictor.pt")
-                    if rank == 0:
-                        os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
-                        torch.save({
-                            "schema_version": 2,
-                            "kind": "gcn_adapter",
-                            "gcn_predictor": None,
-                            "pseudo_labels": pseudo_labels.cpu(),
-                            "active_mask": active.cpu(),
-                            "model_config": asdict(cfg.model),
-                            "input_size": list(cfg.dataset.image_size),
-                            "recognition_alignment": cfg.model.recognition_alignment,
-                        }, checkpoint_path)
-                        torch.save({
-                            "schema_version": 2,
-                            "kind": "recognition_backbone",
-                            "backbone_state": raw_backbone.state_dict(),
-                            "broadface_loss_fn": joint_loss_fn.state_dict() if pseudo_samples and len(joint_dataset) else None,
-                            "epoch": min(3, cfg.train.epochs),
-                            "model_config": asdict(cfg.model),
-                            "input_size": list(cfg.dataset.image_size),
-                            "loss_config": asdict(cfg.loss),
-                            "class_to_idx": dict(labelled.class_to_idx),
-                            "recognition_alignment": cfg.model.recognition_alignment,
-                        }, os.path.join(cfg.train.checkpoint_dir, "phase3_adapted_backbone.pt"))
-                        live_print(f"Phase 3 generated {int(active.sum())} globally indexed pseudo-labelled samples; saved {checkpoint_path}")
-                    return
             else:
-                if rank == 0:
-                    live_print("[Phase 3] Pseudo-label cache is stale; recomputing clustering.")
-        except Exception as exc:
-            if rank == 0:
-                live_print(f"[Phase 3] Could not load pseudo-label cache; recomputing: {exc}")
-    predictor = GCNLinkPredictor(feature_dim=cfg.model.embedding_dim, hidden_dim=256, k_neighbors=5).to(device)
-    # Train the edge predictor on labelled identities before using it for
-    # clustering. The global path falls back to a blockwise graph for very
-    # large collections rather than constructing an N^2 hidden tensor.
-    labelled_loader = DataLoader(
-        labelled,
-        batch_size=cfg.train.batch_size,
-        shuffle=True,
-        num_workers=cfg.dataset.num_workers,
-        drop_last=True,
-    )
-    predictor.train()
-    predictor_optimizer = optim.Adam(predictor.parameters(), lr=1e-3, weight_decay=1e-4)
-    for _ in range(min(3, cfg.train.epochs)):
-        for images, labels, _ in labelled_loader:
-            if images.shape[0] < 2:
-                continue
-            with torch.no_grad():
-                labelled_embeddings = raw_backbone(images.to(device))
-            predictor_optimizer.zero_grad(set_to_none=True)
-            edge_loss, _ = predictor(labelled_embeddings, labels.to(device))
-            edge_loss.backward()
-            predictor_optimizer.step()
-    predictor.eval()
-    if rank == 0:
-        torch.save({
-            "schema_version": 1,
-            "kind": "phase3_gcn_predictor_progress",
-            "predictor": predictor.state_dict(),
-            "model_config": asdict(cfg.model),
-            "num_labeled_classes": num_labeled_classes,
-        }, os.path.join(cfg.train.checkpoint_dir, "phase3_gcn_predictor_latest.pt"))
-        live_print("[Phase 3] Saved GCN predictor progress checkpoint")
-    pseudo_labels, active = predictor.generate_global_pseudo_labels(
-        all_embeddings.to(device),
-        confidence_threshold=cfg.loss.pseudo_label_threshold,
-        start_class_idx=num_labeled_classes,
-    )
-    # The GCN forward pass leaves large intermediate tensors on the device.
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
+                pseudo_labels, active = None, None
+        except Exception:
+            pseudo_labels, active = None, None
+    else:
+        pseudo_labels, active = None, None
+
+    if pseudo_labels is None or active is None:
+        predictor = GCNLinkPredictor(feature_dim=cfg.model.embedding_dim, hidden_dim=256, k_neighbors=5).to(device)
+        labelled_loader = DataLoader(
+            labelled,
+            batch_size=cfg.train.batch_size,
+            shuffle=True,
+            num_workers=cfg.dataset.num_workers,
+            drop_last=True,
+        )
+        predictor.train()
+        predictor_optimizer = optim.Adam(predictor.parameters(), lr=1e-3, weight_decay=1e-4)
+        for _ in range(min(3, cfg.train.epochs)):
+            for images, labels, _ in labelled_loader:
+                if images.shape[0] < 2:
+                    continue
+                with torch.no_grad():
+                    labelled_embeddings = raw_backbone(images.to(device))
+                predictor_optimizer.zero_grad(set_to_none=True)
+                edge_loss, _ = predictor(labelled_embeddings, labels.to(device))
+                edge_loss.backward()
+                predictor_optimizer.step()
+        predictor.eval()
+        pseudo_labels, active = predictor.generate_global_pseudo_labels(
+            all_embeddings.to(device),
+            confidence_threshold=cfg.loss.pseudo_label_threshold,
+            start_class_idx=num_labeled_classes,
+        )
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
     active_indices = torch.where(active.cpu())[0].tolist()
     pseudo_samples = []
@@ -868,9 +917,6 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
     for path, box, label in labelled.samples:
         pixel_box = None
         if box is not None:
-            # CombinedIdentityDataset stores WIDER boxes as normalized YOLO
-            # (xc, yc, width, height), while the Phase 3 path crops pixel
-            # xyxy boxes. Convert once before entering the joint stream.
             try:
                 with Image.open(path) as image:
                     image_width, image_height = image.size
@@ -884,20 +930,19 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
             except Exception as exc:
                 raise RuntimeError(f"Could not prepare WIDER adaptation crop {path}: {exc}") from exc
         labelled_samples.append((path, pixel_box, label, False, 1.0))
+
     joint_dataset = _CombinedIdentityDataset(
         labelled_samples + pseudo_samples,
         cfg.dataset.image_size,
         validation_cache_path=os.path.join(cfg.train.checkpoint_dir, "phase3_image_validation.pt"),
     )
+    joint_loss_fn = None
     if len(joint_dataset) and pseudo_samples:
         pseudo_class_ids = [
             sample[2] if len(sample) == 5 else sample[1]
             for sample in pseudo_samples
         ]
         total_classes = max(num_labeled_classes, max(pseudo_class_ids) + 1)
-        # Save pseudo-labels so the expensive clustering result isn't lost
-        # if fine-tuning fails. The next run can load this and skip embedding
-        # + clustering entirely.
         if rank == 0:
             torch.save({
                 "schema_version": 1,
@@ -906,63 +951,18 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
                 "active_mask": active.cpu(),
                 "num_labeled_classes": num_labeled_classes,
                 "total_classes": total_classes,
-            }, os.path.join(cfg.train.checkpoint_dir, "phase3_pseudo_labels.pt"))
-            live_print("[Phase 3] Saved pseudo-label clustering result")
-        joint_loss_fn = BroadFaceCurricularLoss(
-            in_features=cfg.model.embedding_dim,
-            num_classes=total_classes,
-            scale_factor=cfg.loss.scale,
-            margin=cfg.loss.margin,
-            alpha=cfg.loss.ema_alpha,
-            queue_size=min(cfg.loss.queue_size, 4096),  # Phase 3 has many classes; keep queue small to avoid OOM
-            compensate=True,
-            sync_curriculum=False,
-        ).to(device)
-        joint_optimizer = optim.SGD(
-            list(raw_backbone.parameters()) + list(joint_loss_fn.parameters()),
-            lr=cfg.train.learning_rate * 0.1,
-            momentum=cfg.train.momentum,
-            weight_decay=cfg.train.weight_decay,
+            }, pseudo_labels_cache_path)
+        joint_loss_fn = _finetune_phase3_joint(
+            cfg, raw_backbone, joint_dataset, num_labeled_classes, total_classes, device
         )
-        if len(joint_dataset) < cfg.train.batch_size:
-            raise ValueError(
-                f"Adaptation dataset has {len(joint_dataset)} samples, fewer than batch_size={cfg.train.batch_size}"
-            )
-        joint_loader = DataLoader(
-            joint_dataset,
-            batch_size=cfg.train.batch_size,
-            shuffle=True,
-            num_workers=cfg.dataset.num_workers,
-            drop_last=True,
-        )
-        raw_backbone.train()
-        for epoch in range(min(3, cfg.train.epochs)):
-            for images, labels, is_pseudo, sample_weights in joint_loader:
-                images, labels = images.to(device), labels.to(device)
-                is_pseudo = is_pseudo.bool().to(device)
-                sample_weights = sample_weights.to(device)
-                joint_optimizer.zero_grad(set_to_none=True)
-                embeddings = raw_backbone(images)
-                labelled_mask = ~is_pseudo
-                pseudo_mask = is_pseudo
-                total_loss = embeddings.sum() * 0.0
-                if labelled_mask.any():
-                    total_loss = total_loss + joint_loss_fn(embeddings[labelled_mask], labels[labelled_mask])
-                if pseudo_mask.any():
-                    pseudo_loss = joint_loss_fn(embeddings[pseudo_mask], labels[pseudo_mask])
-                    total_loss = total_loss + cfg.loss.lambda_semi * sample_weights[pseudo_mask].mean() * pseudo_loss
-                total_loss.backward()
-                joint_optimizer.step()
-                to_enqueue = embeddings.detach()
-                joint_loss_fn.enqueue(to_enqueue, labels)
-        raw_backbone.eval()
+
     checkpoint_path = os.path.join(cfg.train.checkpoint_dir, "phase3_semi_gcn_predictor.pt")
     if rank == 0:
         os.makedirs(cfg.train.checkpoint_dir, exist_ok=True)
         torch.save({
             "schema_version": 2,
             "kind": "gcn_adapter",
-            "gcn_predictor": predictor.state_dict(),
+            "gcn_predictor": predictor.state_dict() if predictor is not None else None,
             "pseudo_labels": pseudo_labels.cpu(),
             "active_mask": active.cpu(),
             "model_config": asdict(cfg.model),
@@ -972,9 +972,10 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
         torch.save({
             "schema_version": 2,
             "kind": "recognition_backbone",
+            "backbone": raw_backbone.state_dict(),
             "backbone_state": raw_backbone.state_dict(),
-            "broadface_loss_fn": joint_loss_fn.state_dict() if pseudo_samples and len(joint_dataset) else None,
-            "epoch": min(3, cfg.train.epochs),
+            "broadface_loss_fn": joint_loss_fn.state_dict() if joint_loss_fn is not None else None,
+            "epoch": min(2, cfg.train.epochs),
             "model_config": asdict(cfg.model),
             "input_size": list(cfg.dataset.image_size),
             "loss_config": asdict(cfg.loss),
@@ -983,18 +984,12 @@ def train_phase3_semi_supervised_gcn(cfg: SystemConfig, backbone, num_labeled_cl
         }, os.path.join(cfg.train.checkpoint_dir, "phase3_adapted_backbone.pt"))
         live_print(f"Phase 3 generated {int(active.sum())} globally indexed pseudo-labelled samples; saved {checkpoint_path}")
 
-    # Free predictor memory after saving
-    if "predictor" in locals():
-        del predictor
-    if torch.cuda.is_available():
-        torch.cuda.empty_cache()
-
 
 def main():
     parser = argparse.ArgumentParser(description="OccuPose-BroadDictNet training")
     parser.add_argument(
         "--phase",
-        choices=["all", "detector", "recognition", "adapt"],
+        choices=["all", "detector", "recognition", "adapt", "enroll"],
         default="all",
         help="Run detector pretraining, identity recognition, unlabeled adaptation, or the configured sequence",
     )
@@ -1084,14 +1079,19 @@ def main():
                     cfg, backbone, device, rank=rank,
                     force_retrain=args.retrain_phase2 or args.retrain_all,
                 )
-                # Rank 0 writes the Phase 2 artifact. Ensure every rank has
-                # completed that step before Phase 3 starts.
                 if is_ddp and dist.is_initialized():
                     dist.barrier()
                 if rank == 0:
                     live_print("Phase 2 complete; proceeding to Phase 3 adaptation.")
             elif rank == 0:
                 live_print("Phase 2 skipped: no celeba_dir configured.")
+
+    if args.phase == "enroll":
+        if not cfg.dataset.train_data_dir:
+            raise ValueError("--phase enroll requires --data_dir to recover the identity class map")
+        backbone, _ = load_backbone_for_adaptation(cfg, device)
+        enroll_final_gallery(cfg, backbone, device)
+        return
 
     if args.phase == "adapt":
         if not cfg.dataset.train_data_dir:
@@ -1129,6 +1129,9 @@ def main():
         )
     if is_ddp and dist.is_initialized():
         dist.destroy_process_group()
+
+    if rank == 0 and backbone is not None:
+        enroll_final_gallery(cfg, backbone, device)
 
 
 if __name__ == "__main__":

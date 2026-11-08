@@ -1,0 +1,287 @@
+pbsdsh: spawned task 0x00000000 on logical node 0 event 2
+pbsdsh: waiting on 1 spawned and 0 obits
+pbsdsh: waiting on 0 spawned and 1 obits
+/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/_subclasses/functional_tensor.py:275: UserWarning: Failed to initialize NumPy: module 'numpy._globals' has no attribute '_signature_descriptor' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/_subclasses/functional_tensor.py:275: UserWarning: Failed to initialize NumPy: module 'numpy._globals' has no attribute '_signature_descriptor' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/_subclasses/functional_tensor.py:275: UserWarning: Failed to initialize NumPy: module 'numpy._globals' has no attribute '_signature_descriptor' (Triggered internally at /pytorch/torch/csrc/utils/tensor_numpy.cpp:81.)
+  cpu = _conversion_method_template(device=torch.device("cpu"))
+[Dynamic BoundingBox Rescan] Indexed 30967 bounding box images (New: +30967)
+[Dynamic BoundingBox Rescan] Indexed 30967 bounding box images (New: +30967)
+Downloading: "https://download.pytorch.org/models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth" to /lfs/usrhome/btech/na22b025/.cache/torch/hub/checkpoints/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+Downloading: "https://download.pytorch.org/models/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth" to /lfs/usrhome/btech/na22b025/.cache/torch/hub/checkpoints/fasterrcnn_resnet50_fpn_coco-258fb6c6.pth
+Phase 0 includes nested WIDER YOLO boxes: /lfs/usrhome/btech/na22b025/scratch/Face_Dataset/unlabeled/masked-face-detection-wider-dataset
+Phase 0 detector epoch 1/10 step 1/7742 loss=1.00987
+Phase 0 detector epoch 1/10 step 50/7742 loss=1.23829
+Phase 0 detector epoch 1/10 step 100/7742 loss=0.40723
+Phase 0 detector epoch 1/10 step 150/7742 loss=0.26450
+Phase 0 detector epoch 1/10 step 200/7742 loss=0.29436
+Phase 0 detector epoch 1/10 step 250/7742 loss=0.40037
+Phase 0 detector epoch 1/10 step 300/7742 loss=0.41467
+Phase 0 detector epoch 1/10 step 350/7742 loss=0.16246
+Phase 0 detector epoch 1/10 step 400/7742 loss=1.01942
+Phase 0 detector epoch 1/10 step 450/7742 loss=1.05089
+Phase 0 detector epoch 1/10 step 500/7742 loss=0.24228
+Phase 0 detector epoch 1/10 step 550/7742 loss=0.28768
+Phase 0 detector epoch 1/10 step 600/7742 loss=0.87810
+Phase 0 detector epoch 1/10 step 650/7742 loss=0.18872
+Phase 0 detector epoch 1/10 step 700/7742 loss=1.20751
+Phase 0 detector epoch 1/10 step 750/7742 loss=1.16482
+Phase 0 detector epoch 1/10 step 800/7742 loss=0.22087
+Phase 0 detector epoch 1/10 step 850/7742 loss=0.20558
+Phase 0 detector epoch 1/10 step 900/7742 loss=0.30371
+Phase 0 detector epoch 1/10 step 950/7742 loss=0.29354
+Phase 0 detector epoch 1/10 step 1000/7742 loss=1.44818
+Phase 0 detector epoch 1/10 step 1050/7742 loss=1.02886
+Phase 0 detector epoch 1/10 step 1100/7742 loss=0.16830
+Phase 0 detector epoch 1/10 step 1150/7742 loss=0.19138
+Phase 0 detector epoch 1/10 step 1200/7742 loss=0.29021
+Phase 0 detector epoch 1/10 step 1250/7742 loss=0.96035
+Phase 0 detector epoch 1/10 step 1300/7742 loss=0.18031
+Phase 0 detector epoch 1/10 step 1350/7742 loss=0.67897
+Phase 0 detector epoch 1/10 step 1400/7742 loss=0.14774
+Phase 0 detector epoch 1/10 step 1450/7742 loss=0.56293
+Phase 0 detector epoch 1/10 step 1500/7742 loss=0.22671
+Phase 0 detector epoch 1/10 step 1550/7742 loss=0.19616
+Phase 0 detector epoch 1/10 step 1600/7742 loss=0.21879
+Phase 0 detector epoch 1/10 step 1650/7742 loss=0.22664
+Phase 0 detector epoch 1/10 step 1700/7742 loss=0.34512
+Phase 0 detector epoch 1/10 step 1750/7742 loss=0.22193
+Phase 0 detector epoch 1/10 step 1800/7742 loss=0.34734
+Phase 0 detector epoch 1/10 step 1850/7742 loss=0.37521
+Phase 0 detector epoch 1/10 step 1900/7742 loss=0.62970
+Phase 0 detector epoch 1/10 step 1950/7742 loss=0.17497
+Phase 0 detector epoch 1/10 step 2000/7742 loss=0.18966
+Phase 0 detector epoch 1/10 step 2050/7742 loss=0.77878
+Phase 0 detector epoch 1/10 step 2100/7742 loss=0.12942
+Phase 0 detector epoch 1/10 step 2150/7742 loss=1.75496
+Phase 0 detector epoch 1/10 step 2200/7742 loss=0.24027
+Phase 0 detector epoch 1/10 step 2250/7742 loss=0.17844
+Phase 0 detector epoch 1/10 step 2300/7742 loss=0.17831
+Phase 0 detector epoch 1/10 step 2350/7742 loss=0.41677
+Phase 0 detector epoch 1/10 step 2400/7742 loss=0.55900
+Phase 0 detector epoch 1/10 step 2450/7742 loss=0.76837
+Phase 0 detector epoch 1/10 step 2500/7742 loss=0.85408
+Phase 0 detector epoch 1/10 step 2550/7742 loss=0.18298
+Phase 0 detector epoch 1/10 step 2600/7742 loss=0.85346
+Phase 0 detector epoch 1/10 step 2650/7742 loss=1.66668
+Phase 0 detector epoch 1/10 step 2700/7742 loss=0.16028
+Phase 0 detector epoch 1/10 step 2750/7742 loss=0.69163
+Phase 0 detector epoch 1/10 step 2800/7742 loss=0.34711
+Phase 0 detector epoch 1/10 step 2850/7742 loss=0.17524
+Phase 0 detector epoch 1/10 step 2900/7742 loss=0.20959
+Phase 0 detector epoch 1/10 step 2950/7742 loss=0.21788
+Phase 0 detector epoch 1/10 step 3000/7742 loss=0.38830
+Phase 0 detector epoch 1/10 step 3050/7742 loss=0.91565
+Phase 0 detector epoch 1/10 step 3100/7742 loss=1.18019
+Phase 0 detector epoch 1/10 step 3150/7742 loss=0.15606
+Phase 0 detector epoch 1/10 step 3200/7742 loss=0.41335
+Phase 0 detector epoch 1/10 step 3250/7742 loss=0.16483
+Phase 0 detector epoch 1/10 step 3300/7742 loss=0.18045
+Phase 0 detector epoch 1/10 step 3350/7742 loss=0.32609
+Phase 0 detector epoch 1/10 step 3400/7742 loss=0.20074
+Phase 0 detector epoch 1/10 step 3450/7742 loss=0.34740
+Phase 0 detector epoch 1/10 step 3500/7742 loss=0.18468
+Phase 0 detector epoch 1/10 step 3550/7742 loss=0.28158
+Phase 0 detector epoch 1/10 step 3600/7742 loss=0.14112
+Phase 0 detector epoch 1/10 step 3650/7742 loss=0.20203
+Phase 0 detector epoch 1/10 step 3700/7742 loss=0.33160
+Phase 0 detector epoch 1/10 step 3750/7742 loss=0.13644
+Phase 0 detector epoch 1/10 step 3800/7742 loss=0.20809
+Phase 0 detector epoch 1/10 step 3850/7742 loss=0.83284
+Phase 0 detector epoch 1/10 step 3900/7742 loss=0.52227
+Phase 0 detector epoch 1/10 step 3950/7742 loss=0.20131
+Phase 0 detector epoch 1/10 step 4000/7742 loss=0.87170
+Phase 0 detector epoch 1/10 step 4050/7742 loss=0.25786
+Phase 0 detector epoch 1/10 step 4100/7742 loss=0.22366
+Phase 0 detector epoch 1/10 step 4150/7742 loss=0.13476
+Phase 0 detector epoch 1/10 step 4200/7742 loss=0.16766
+Phase 0 detector epoch 1/10 step 4250/7742 loss=0.73456
+Phase 0 detector epoch 1/10 step 4300/7742 loss=0.16909
+Phase 0 detector epoch 1/10 step 4350/7742 loss=0.53059
+Phase 0 detector epoch 1/10 step 4400/7742 loss=0.19499
+Phase 0 detector epoch 1/10 step 4450/7742 loss=0.64855
+Phase 0 detector epoch 1/10 step 4500/7742 loss=0.29768
+Phase 0 detector epoch 1/10 step 4550/7742 loss=0.24883
+Phase 0 detector epoch 1/10 step 4600/7742 loss=1.46937
+Phase 0 detector epoch 1/10 step 4650/7742 loss=0.15929
+Phase 0 detector epoch 1/10 step 4700/7742 loss=0.16605
+Phase 0 detector epoch 1/10 step 4750/7742 loss=0.52870
+Phase 0 detector epoch 1/10 step 4800/7742 loss=0.84917
+Phase 0 detector epoch 1/10 step 4850/7742 loss=0.58631
+Phase 0 detector epoch 1/10 step 4900/7742 loss=0.31675
+Phase 0 detector epoch 1/10 step 4950/7742 loss=0.09174
+Phase 0 detector epoch 1/10 step 5000/7742 loss=1.06172
+Phase 0 detector epoch 1/10 step 5050/7742 loss=0.29866
+Phase 0 detector epoch 1/10 step 5100/7742 loss=0.13618
+Phase 0 detector epoch 1/10 step 5150/7742 loss=0.49060
+Phase 0 detector epoch 1/10 step 5200/7742 loss=0.21960
+Phase 0 detector epoch 1/10 step 5250/7742 loss=0.14645
+Phase 0 detector epoch 1/10 step 5300/7742 loss=0.33326
+Phase 0 detector epoch 1/10 step 5350/7742 loss=0.13663
+Phase 0 detector epoch 1/10 step 5400/7742 loss=0.13748
+Phase 0 detector epoch 1/10 step 5450/7742 loss=0.16444
+Phase 0 detector epoch 1/10 step 5500/7742 loss=0.20806
+Phase 0 detector epoch 1/10 step 5550/7742 loss=0.23961
+Phase 0 detector epoch 1/10 step 5600/7742 loss=0.40391
+Phase 0 detector epoch 1/10 step 5650/7742 loss=0.88495
+Phase 0 detector epoch 1/10 step 5700/7742 loss=0.18109
+Phase 0 detector epoch 1/10 step 5750/7742 loss=0.51332
+Phase 0 detector epoch 1/10 step 5800/7742 loss=0.13486
+Phase 0 detector epoch 1/10 step 5850/7742 loss=0.30361
+Phase 0 detector epoch 1/10 step 5900/7742 loss=0.97058
+Phase 0 detector epoch 1/10 step 5950/7742 loss=0.12606
+Phase 0 detector epoch 1/10 step 6000/7742 loss=0.41696
+Phase 0 detector epoch 1/10 step 6050/7742 loss=0.37775
+Phase 0 detector epoch 1/10 step 6100/7742 loss=0.23981
+Phase 0 detector epoch 1/10 step 6150/7742 loss=0.58805
+Phase 0 detector epoch 1/10 step 6200/7742 loss=0.81805
+Phase 0 detector epoch 1/10 step 6250/7742 loss=0.17279
+Phase 0 detector epoch 1/10 step 6300/7742 loss=0.28200
+Phase 0 detector epoch 1/10 step 6350/7742 loss=0.31758
+Phase 0 detector epoch 1/10 step 6400/7742 loss=0.81727
+Phase 0 detector epoch 1/10 step 6450/7742 loss=0.43948
+Phase 0 detector epoch 1/10 step 6500/7742 loss=0.19982
+Phase 0 detector epoch 1/10 step 6550/7742 loss=0.44305
+Phase 0 detector epoch 1/10 step 6600/7742 loss=0.27520
+Phase 0 detector epoch 1/10 step 6650/7742 loss=0.39457
+Phase 0 detector epoch 1/10 step 6700/7742 loss=0.14167
+Phase 0 detector epoch 1/10 step 6750/7742 loss=0.27008
+Phase 0 detector epoch 1/10 step 6800/7742 loss=0.19050
+Phase 0 detector epoch 1/10 step 6850/7742 loss=0.25167
+Phase 0 detector epoch 1/10 step 6900/7742 loss=0.46212
+Phase 0 detector epoch 1/10 step 6950/7742 loss=0.59896
+Phase 0 detector epoch 1/10 step 7000/7742 loss=0.18913
+Phase 0 detector epoch 1/10 step 7050/7742 loss=0.71420
+Phase 0 detector epoch 1/10 step 7100/7742 loss=1.01659
+Phase 0 detector epoch 1/10 step 7150/7742 loss=0.70243
+Phase 0 detector epoch 1/10 step 7200/7742 loss=0.30564
+Phase 0 detector epoch 1/10 step 7250/7742 loss=0.22713
+Phase 0 detector epoch 1/10 step 7300/7742 loss=0.71496
+Phase 0 detector epoch 1/10 step 7350/7742 loss=0.93066
+Phase 0 detector epoch 1/10 step 7400/7742 loss=0.53532
+Phase 0 detector epoch 1/10 step 7450/7742 loss=0.25872
+Phase 0 detector epoch 1/10 step 7500/7742 loss=0.34800
+Phase 0 detector epoch 1/10 step 7550/7742 loss=1.37723
+Phase 0 detector epoch 1/10 step 7600/7742 loss=1.02868
+Phase 0 detector epoch 1/10 step 7650/7742 loss=0.24298
+Phase 0 detector epoch 1/10 step 7700/7742 loss=0.40225
+Phase 0 detector epoch 1/10 loss=0.43091
+Phase 0 detector epoch 2/10 step 1/7742 loss=0.15185
+Phase 0 detector epoch 2/10 step 50/7742 loss=0.36633
+Phase 0 detector epoch 2/10 step 100/7742 loss=0.10908
+Phase 0 detector epoch 2/10 step 150/7742 loss=0.42420
+Phase 0 detector epoch 2/10 step 200/7742 loss=0.24862
+Phase 0 detector epoch 2/10 step 250/7742 loss=0.42224
+Phase 0 detector epoch 2/10 step 300/7742 loss=0.37257
+Phase 0 detector epoch 2/10 step 350/7742 loss=0.12339
+Phase 0 detector epoch 2/10 step 400/7742 loss=0.13815
+Phase 0 detector epoch 2/10 step 450/7742 loss=0.33963
+Phase 0 detector epoch 2/10 step 500/7742 loss=0.58761
+Phase 0 detector epoch 2/10 step 550/7742 loss=0.45710
+Phase 0 detector epoch 2/10 step 600/7742 loss=0.28674
+Phase 0 detector epoch 2/10 step 650/7742 loss=0.54999
+Phase 0 detector epoch 2/10 step 700/7742 loss=0.13631
+Phase 0 detector epoch 2/10 step 750/7742 loss=0.19486
+Phase 0 detector epoch 2/10 step 800/7742 loss=0.30108
+Phase 0 detector epoch 2/10 step 850/7742 loss=0.16068
+Phase 0 detector epoch 2/10 step 900/7742 loss=0.09682
+Phase 0 detector epoch 2/10 step 950/7742 loss=0.12871
+Phase 0 detector epoch 2/10 step 1000/7742 loss=0.30035
+Phase 0 detector epoch 2/10 step 1050/7742 loss=0.23618
+Phase 0 detector epoch 2/10 step 1100/7742 loss=0.37059
+Phase 0 detector epoch 2/10 step 1150/7742 loss=1.21369
+Phase 0 detector epoch 2/10 step 1200/7742 loss=0.13812
+Phase 0 detector epoch 2/10 step 1250/7742 loss=0.14531
+Phase 0 detector epoch 2/10 step 1300/7742 loss=0.09971
+Phase 0 detector epoch 2/10 step 1350/7742 loss=0.21740
+Phase 0 detector epoch 2/10 step 1400/7742 loss=0.37058
+[rank0]: Traceback (most recent call last):
+[rank0]:   File "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py", line 823, in <module>
+[rank0]:     main()
+[rank0]:   File "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py", line 753, in main
+[rank0]:     detector_checkpoint = train_phase0_face_detector(
+[rank0]:                           ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py", line 295, in train_phase0_face_detector
+[rank0]:     loss_dict = detector.detection_loss(images, targets)
+[rank0]:                 ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/models/detector.py", line 300, in detection_loss
+[rank0]:     return self.model(images, targets)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/nn/parallel/distributed.py", line 1643, in forward
+[rank0]:     else self._run_ddp_forward(*inputs, **kwargs)
+[rank0]:          ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/nn/parallel/distributed.py", line 1459, in _run_ddp_forward
+[rank0]:     return self.module(*inputs, **kwargs)  # type: ignore[index]
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/.python_deps/torchvision/models/detection/generalized_rcnn.py", line 104, in forward
+[rank0]:     proposals, proposal_losses = self.rpn(images, features, targets)
+[rank0]:                                  ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1739, in _wrapped_call_impl
+[rank0]:     return self._call_impl(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/nn/modules/module.py", line 1750, in _call_impl
+[rank0]:     return forward_call(*args, **kwargs)
+[rank0]:            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/.python_deps/torchvision/models/detection/rpn.py", line 379, in forward
+[rank0]:     labels, matched_gt_boxes = self.assign_targets_to_anchors(anchors, targets)
+[rank0]:                                ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/.python_deps/torchvision/models/detection/rpn.py", line 208, in assign_targets_to_anchors
+[rank0]:     match_quality_matrix = self.box_similarity(gt_boxes, anchors_per_image)
+[rank0]:                            ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/.python_deps/torchvision/ops/boxes.py", line 287, in box_iou
+[rank0]:     inter, union = _box_inter_union(boxes1, boxes2)
+[rank0]:                    ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+[rank0]:   File "/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/.python_deps/torchvision/ops/boxes.py", line 266, in _box_inter_union
+[rank0]:     union = area1[:, None] + area2 - inter
+[rank0]:             ~~~~~~~~~~~~~~~~~~~~~~~^~~~~~~
+[rank0]: torch.OutOfMemoryError: CUDA out of memory. Tried to allocate 3.07 GiB. GPU 0 has a total capacity of 31.74 GiB of which 2.69 GiB is free. Including non-PyTorch memory, this process has 29.04 GiB memory in use. Of the allocated memory 28.30 GiB is allocated by PyTorch, and 272.81 MiB is reserved by PyTorch but unallocated. If reserved but unallocated memory is large try setting PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True to avoid fragmentation.  See documentation for Memory Management  (https://pytorch.org/docs/stable/notes/cuda.html#environment-variables)
+[rank0]:[W1020 11:37:04.090816912 ProcessGroupNCCL.cpp:1496] Warning: WARNING: destroy_process_group() was not called before program exit, which can leak resources. For more info, please see https://pytorch.org/docs/stable/distributed.html#shutdown (function operator())
+W1020 11:37:06.578000 10495 site-packages/torch/distributed/elastic/multiprocessing/api.py:897] Sending process 10551 closing signal SIGTERM
+E1020 11:37:08.699000 10495 site-packages/torch/distributed/elastic/multiprocessing/api.py:869] failed (exitcode: 1) local_rank: 0 (pid: 10550) of binary: /lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/python3.11
+Traceback (most recent call last):
+  File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/bin/torchrun", line 6, in <module>
+    sys.exit(main())
+             ^^^^^^
+  File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/distributed/elastic/multiprocessing/errors/__init__.py", line 355, in wrapper
+    return f(*args, **kwargs)
+           ^^^^^^^^^^^^^^^^^^
+  File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/distributed/run.py", line 918, in main
+    run(args)
+  File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/distributed/run.py", line 909, in run
+    elastic_launch(
+  File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 138, in __call__
+    return launch_agent(self._config, self._entrypoint, list(args))
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+  File "/lfs/usrhome/btech/na22b025/miniforge3/envs/venv_gpu/lib/python3.11/site-packages/torch/distributed/launcher/api.py", line 269, in launch_agent
+    raise ChildFailedError(
+torch.distributed.elastic.multiprocessing.errors.ChildFailedError: 
+============================================================
+/lfs/usrhome/btech/na22b025/Face_Detection_In_Wild/train.py FAILED
+------------------------------------------------------------
+Failures:
+  <NO_OTHER_FAILURES>
+------------------------------------------------------------
+Root Cause (first observed failure):
+[0]:
+  time      : 2026-10-20_11:37:06
+  host      : gpu003.ib0.cm.aqua.iitm.ac.in
+  rank      : 0 (local_rank: 0)
+  exitcode  : 1 (pid: 10550)
+  error_file: <N/A>
+  traceback : To enable traceback see: https://pytorch.org/docs/stable/elastic/errors.html
+============================================================
+pbsdsh: task 0x00000000 exit status 1

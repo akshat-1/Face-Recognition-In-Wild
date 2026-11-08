@@ -97,28 +97,30 @@ def wider_folder_identity_name(folder_name: str) -> str:
 
 
 def canonical_identity_name(name: str) -> str:
-    """Normalize dataset condition prefixes without making conditions identities."""
+    """Normalize dataset condition prefixes, trailing image numbers, and underscores."""
     normalized = name.strip()
-    normalized = re.sub(r'^(ROF_|WILD_|MASK_)', '', normalized, flags=re.IGNORECASE)
-    normalized = re.sub(
-        r'(?:_wearing_(?:mask|sunglasses|hat)|_(?:mask|sunglasses|hat)|'
-        r'_(?:with_mask|masked))$',
-        '', normalized, flags=re.IGNORECASE,
-    )
-    return normalized or name.strip()
+    normalized = re.sub(r'^(ROF_|WILD_|MASK_|USB_)', '', normalized, flags=re.IGNORECASE)
+    while True:
+        prev = normalized
+        normalized = re.sub(
+            r'(?:_wearing_(?:mask|sunglasses|hat)|_(?:mask|sunglasses|hat)|'
+            r'_(?:with_mask|masked)|_\d+)$',
+            '', normalized, flags=re.IGNORECASE,
+        )
+        if normalized == prev:
+            break
+    normalized = normalized.replace('_', ' ').replace('-', ' ')
+    normalized = re.sub(r'\s+', ' ', normalized).strip()
+    return normalized.title() if normalized else name.strip()
 
 
 def is_readable_image(path: str) -> bool:
-    """Return whether an uploaded image file has a non-empty payload.
-
-    Dataset uploads can leave zero-byte files behind. Do this cheap check
-    during indexing instead of opening every image over AQUA's high-latency
-    filesystem; PIL remains the authoritative decoder in ``__getitem__``.
-    """
+    """Return whether an uploaded image file has a non-empty payload."""
     try:
         return os.path.getsize(path) > 0
     except OSError:
         return False
+
 
 class PurePyTorchImageTransform:
     """
@@ -133,15 +135,16 @@ class PurePyTorchImageTransform:
         height, width = self.image_size
         if img.size != (width, height):
             img = img.resize((width, height), Image.BILINEAR)
-            
+
         if self.is_train and torch.rand(1).item() > 0.5:
             img = img.transpose(Image.FLIP_LEFT_RIGHT)
-            
+
         img_bytes = bytearray(img.tobytes())
         tensor = torch.frombuffer(img_bytes, dtype=torch.uint8)
         tensor = tensor.view(height, width, 3).permute(2, 0, 1).float() / 255.0
         tensor = (tensor - 0.5) / 0.5
         return tensor
+
 
 def get_default_transform(image_size=(112, 112), is_train=True):
     if transforms is not None:
@@ -171,15 +174,13 @@ def pil_to_float_tensor(img: Image.Image) -> torch.Tensor:
     raw = bytearray(img.tobytes())
     return torch.frombuffer(raw, dtype=torch.uint8).view(height, width, 3).permute(2, 0, 1).float() / 255.0
 
+
 def parse_yolo_txt(txt_path: str):
     """
     Parses YOLO format bounding box annotation file (.txt).
     """
     bboxes = []
     try:
-        # Open directly instead of doing an existence check first. AQUA's
-        # dataset is on a high-latency filesystem, where the extra stat call
-        # for every image makes a 30k-image scan take many minutes.
         with open(txt_path, 'r', encoding='utf-8', errors='ignore') as f:
             for line in f:
                 parts = line.strip().split()
@@ -193,6 +194,7 @@ def parse_yolo_txt(txt_path: str):
     except (OSError, TypeError):
         pass
     return bboxes
+
 
 class UnlabeledWildDataset(data.Dataset):
     """
@@ -211,13 +213,6 @@ class UnlabeledWildDataset(data.Dataset):
         self.rescan()
 
     def rescan(self):
-        """
-        Rescans the explicitly configured unlabeled image stream.
-
-        This loader returns image crops as unlabeled recognition samples. Full
-        scenes must be routed through DetectorCropDataset before Phase 3; this
-        loader intentionally does not invent face boxes.
-        """
         prev_count = len(self.samples)
         self.samples = []
         if self.unlabeled_dir and os.path.exists(self.unlabeled_dir):
@@ -230,7 +225,7 @@ class UnlabeledWildDataset(data.Dataset):
                         ) == os.path.abspath(self.special_wider_root):
                             continue
                         self.samples.append(path)
-                        
+
         if len(self.samples) == 0 and self.allow_synthetic:
             for _ in range(500):
                 self.samples.append("dummy_unlabeled")
@@ -257,17 +252,12 @@ class UnlabeledWildDataset(data.Dataset):
                 img_tensor = self.transform(img)
             except Exception as exc:
                 raise RuntimeError(f"Could not decode unlabeled image {path}: {exc}") from exc
-                
+
         return img_tensor, -1, False
 
 
 class DetectorCropDataset(data.Dataset):
-    """Materialize detector-approved face crops from unlabeled scene images.
-
-    This is the explicit bridge between full wild images and recognition
-    adaptation. Detector boxes are preprocessing metadata only; they are never
-    treated as identity labels or ground-truth localization targets.
-    """
+    """Materialize detector-approved face crops from unlabeled scene images."""
     def __init__(self, root_dir: str, detector, device: torch.device,
                  score_threshold: float = 0.75, transform=None,
                  image_size=(112, 112), max_detections_per_image: int = 20,
@@ -294,9 +284,6 @@ class DetectorCropDataset(data.Dataset):
         if not image_paths:
             raise DatasetConfigurationError(f"No scene images were found in: {self.root_dir}")
 
-        # Try to load the cache BEFORE computing the expensive manifest hash.
-        # On AQUA's high-latency filesystem, stat()-ing hundreds of thousands of
-        # files can take hours, so the cache must be checked first.
         if cache_path and use_cache and os.path.isfile(cache_path):
             try:
                 cached = torch.load(cache_path, map_location="cpu", weights_only=False)
@@ -360,8 +347,6 @@ class DetectorCropDataset(data.Dataset):
                 os.makedirs(cache_dir, exist_ok=True)
             torch.save({**cache_metadata, "samples": self.samples}, cache_path)
             print(f"[DetectorCropDataset] Saved detector crop cache: {cache_path} ({len(self.samples)} samples)")
-        # Detection is complete; do not pickle a full GPU model into DataLoader
-        # workers when the crops are later read for adaptation.
         self.detector = None
 
     def __len__(self):
@@ -389,7 +374,7 @@ class DetectorCropDataset(data.Dataset):
 class NameLabeledFaceDataset(data.Dataset):
     """
     Dynamic Dataset Loader for 'name_label/' directory.
-    Supports dynamic rescanning of constantly growing labeled datasets uploaded in parallel.
+    Supports both folder-per-person (LFW_without_Mask, ROF) and filename-per-person (Masked_LFW_Dataset, face_with_mask).
     """
     def __init__(self, root_dir: str = None, name_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112), allow_synthetic: bool = False):
         super(NameLabeledFaceDataset, self).__init__()
@@ -403,16 +388,13 @@ class NameLabeledFaceDataset(data.Dataset):
         self.rescan()
 
     def rescan(self):
-        """
-        Dynamically rescans name_label/ directory to index newly arrived identity images.
-        """
         prev_count = len(self.samples)
         self.samples = []
         self.class_to_idx = {}
         if self.name_label_dir and os.path.exists(self.name_label_dir):
             self._parse_name_label_directory()
         elif self.allow_synthetic:
-            self.class_to_idx = {f"Subject_{i}": i for i in range(50)}
+            self.class_to_idx = {f"Subject {i}": i for i in range(50)}
             for i in range(500):
                 self.samples.append(("dummy_labeled", i % 50))
         else:
@@ -430,43 +412,63 @@ class NameLabeledFaceDataset(data.Dataset):
         return len(self.samples)
 
     def _parse_name_label_directory(self):
-        rof_dir = os.path.join(self.name_label_dir, "ROF")
-        if os.path.exists(rof_dir):
-            self._parse_folder_identities(rof_dir, prefix="ROF_")
-            
-        wild_dir = os.path.join(self.name_label_dir, "face_detection_in_wild_dataset")
-        if os.path.exists(wild_dir):
-            self._parse_folder_identities(wild_dir, prefix="WILD_")
-            
-        mask_dir = os.path.join(self.name_label_dir, "face_with_mask")
-        if os.path.exists(mask_dir):
-            self._parse_filename_identities(mask_dir)
-            
-        if len(self.samples) == 0:
-            self._parse_folder_identities(self.name_label_dir, prefix="")
+        for subdir, prefix, mode in [
+            ("ROF", "ROF_", "auto"),
+            ("face_detection_in_wild_dataset", "WILD_", "auto"),
+            ("face_with_mask", "MASK_", "filename"),
+            ("Masked_LFW_Dataset", "MASK_", "filename"),
+            ("LFW_without_Mask", "", "folder"),
+            ("usb_data", "USB_", "auto"),
+        ]:
+            candidate = os.path.join(self.name_label_dir, subdir)
+            if os.path.isdir(candidate):
+                if mode == "filename":
+                    self._parse_filename_identities(candidate)
+                elif mode == "folder":
+                    self._parse_folder_identities(candidate, prefix=prefix)
+                else:
+                    self._parse_auto_identities(candidate, prefix=prefix)
 
-    def _parse_folder_identities(self, base_dir: str, prefix: str = ""):
+        if len(self.samples) == 0:
+            self._parse_auto_identities(self.name_label_dir, prefix="")
+
+    def _parse_auto_identities(self, base_dir: str, prefix: str = ""):
+        generic_dir_names = {
+            "name_label", "face_data", "masked_lfw_dataset", "face_with_mask",
+            "lfw_without_mask", "rof", "usb_data", "images", "train", "test", "val",
+            "face_detection_in_wild_dataset",
+        }
         for root, dirs, files in os.walk(base_dir):
             dirs.sort()
             image_files = sorted(f for f in files if f.lower().endswith(VALID_IMAGE_EXTENSIONS))
-            if len(image_files) > 0:
-                folder_name = canonical_identity_name(prefix + os.path.basename(root))
-                if folder_name not in self.class_to_idx:
-                    self.class_to_idx[folder_name] = len(self.class_to_idx)
-                label_idx = self.class_to_idx[folder_name]
-                
+            if not image_files:
+                continue
+            folder_base = os.path.basename(root)
+            if folder_base.lower() in generic_dir_names:
+                for f in image_files:
+                    stem = os.path.splitext(f)[0]
+                    identity_name = canonical_identity_name(prefix + stem)
+                    if identity_name not in self.class_to_idx:
+                        self.class_to_idx[identity_name] = len(self.class_to_idx)
+                    label_idx = self.class_to_idx[identity_name]
+                    self.samples.append((os.path.join(root, f), label_idx))
+            else:
+                identity_name = canonical_identity_name(prefix + folder_base)
+                if identity_name not in self.class_to_idx:
+                    self.class_to_idx[identity_name] = len(self.class_to_idx)
+                label_idx = self.class_to_idx[identity_name]
                 for f in image_files:
                     self.samples.append((os.path.join(root, f), label_idx))
 
+    def _parse_folder_identities(self, base_dir: str, prefix: str = ""):
+        self._parse_auto_identities(base_dir, prefix=prefix)
+
     def _parse_filename_identities(self, base_dir: str):
-        pattern = re.compile(r'^(.*?)(?:_\d+)?\.(?:jpg|jpeg|png|bmp|webp)$', re.IGNORECASE)
         for root, _, files in os.walk(base_dir):
-            for f in files:
+            for f in sorted(files):
                 if f.lower().endswith(VALID_IMAGE_EXTENSIONS):
-                    match = pattern.match(f)
-                    raw_name = match.group(1) if match else "unknown_mask"
-                    identity_name = canonical_identity_name("MASK_" + raw_name)
-                    
+                    stem = os.path.splitext(f)[0]
+                    identity_name = canonical_identity_name("MASK_" + stem)
                     if identity_name not in self.class_to_idx:
                         self.class_to_idx[identity_name] = len(self.class_to_idx)
                     label_idx = self.class_to_idx[identity_name]
@@ -496,18 +498,7 @@ class NameLabeledFaceDataset(data.Dataset):
 
 
 class WiderFolderLabeledFaceDataset(data.Dataset):
-    """Use WIDER YOLO boxes as crops and the folder text as a label.
-
-    AQUA's special dataset stores images and labels in parallel trees:
-
-    ``.../images/{train,val}/0--Parade/image.jpg``
-    ``.../labels/{train,val}/0--Parade/image.txt``
-
-    Each valid YOLO box becomes one recognition crop. The numeric prefix and
-    punctuation in the folder name are removed, so ``0--Parade`` becomes the
-    label ``Parade``. This is the requested generic folder-label contract; it
-    is not treated as a verified person identity.
-    """
+    """Use WIDER YOLO boxes as crops and the folder text as a label."""
     def __init__(self, root_dir: str, transform=None, is_train: bool = True,
                  image_size=(112, 112), split: str = None):
         super().__init__()
@@ -675,10 +666,7 @@ class CombinedIdentityDataset(data.Dataset):
 
 
 class BoundingBoxFaceDataset(data.Dataset):
-    """
-    Dynamic Dataset Loader for 'bb_label/' directory.
-    Supports dynamic rescanning of bounding box datasets uploaded in parallel.
-    """
+    """Dynamic Dataset Loader for 'bb_label/' directory."""
     def __init__(self, root_dir: str = None, bb_label_dir: str = None, transform=None, is_train: bool = True, image_size=(112, 112), allow_synthetic: bool = False, detection_mode: bool = False, split: str = None, include_wider: bool = True):
         super(BoundingBoxFaceDataset, self).__init__()
         configured_root = root_dir if root_dir is not None else bb_label_dir
@@ -694,9 +682,6 @@ class BoundingBoxFaceDataset(data.Dataset):
         self.rescan()
 
     def rescan(self):
-        """
-        Dynamically rescans bb_label/ directory for newly uploaded YOLO / Darknet bounding box images.
-        """
         prev_count = len(self.samples)
         self.samples = []
         if self.bb_label_dir and os.path.exists(self.bb_label_dir):
@@ -713,7 +698,7 @@ class BoundingBoxFaceDataset(data.Dataset):
             raise DatasetConfigurationError(
                 f"No valid bounding-box images were found in: {self.bb_label_dir}"
             )
-                
+
         if len(self.samples) != prev_count:
             print(f"[Dynamic BoundingBox Rescan] Indexed {len(self.samples)} bounding box images (New: +{len(self.samples) - prev_count})")
         return len(self.samples)
@@ -753,20 +738,11 @@ class BoundingBoxFaceDataset(data.Dataset):
                                 component.lower() for component in os.path.normpath(root).split(os.sep)
                             }
                             explicit_splits = path_components & DETECTION_SPLIT_NAMES
-                            # Keep unsplit AQUA subsets (for example
-                            # facemaskyolo/data/images) alongside explicit
-                            # splits. When a split is requested, filter only
-                            # directories that explicitly name a split.
                             if self.split and explicit_splits and self.split not in explicit_splits:
                                 continue
                             base_name = os.path.splitext(f)[0]
-
                             txt_path = os.path.join(label_root, base_name + ".txt")
-                                
                             bboxes = parse_yolo_txt(txt_path)
-                            # Detection training needs positive targets. Images
-                            # without a readable annotation are not silently
-                            # converted into a fake class-0 sample.
                             if bboxes:
                                 self.samples.append((img_path, bboxes, 0))
                     if indexed_images and indexed_images % 5000 == 0:
@@ -785,7 +761,7 @@ class BoundingBoxFaceDataset(data.Dataset):
         if path == "dummy_bb":
             img_tensor = torch.randn(3, *self.image_size)
             return img_tensor, class_id, True
-            
+
         try:
             img = Image.open(path).convert('RGB')
             w_img, h_img = img.size
@@ -800,11 +776,6 @@ class BoundingBoxFaceDataset(data.Dataset):
                     y2 = min(float(h_img), (yc + h_box / 2.0) * h_img)
                     if x2 > x1 + 1.0 and y2 > y1 + 1.0:
                         boxes.append([x1, y1, x2, y2])
-                        # Detection is intentionally class-agnostic: all
-                        # foreground YOLO rows describe a face, while the
-                        # torchvision background class remains 0. This keeps
-                        # the detector compatible with AQUA subsets whose mask
-                        # class IDs differ.
                         labels.append(1)
 
                 if self.is_train and torch.rand(1).item() > 0.5:
@@ -819,26 +790,25 @@ class BoundingBoxFaceDataset(data.Dataset):
                     "iscrowd": torch.zeros(len(boxes), dtype=torch.int64),
                 }
                 return image_tensor, target
-            
+
             if bboxes and len(bboxes) > 0:
                 _, xc, yc, w_box, h_box = next(self._iter_yolo_boxes(bboxes))
                 x1 = max(0, int((xc - w_box / 2.0) * w_img))
                 y1 = max(0, int((yc - h_box / 2.0) * h_img))
                 x2 = min(w_img, int((xc + w_box / 2.0) * w_img))
                 y2 = min(h_img, int((yc + h_box / 2.0) * h_img))
-                
+
                 if x2 > x1 + 5 and y2 > y1 + 5:
                     img = img.crop((x1, y1, x2, y2))
-                    
+
             img_tensor = self.transform(img)
         except Exception as exc:
             raise RuntimeError(f"Could not decode bounding-box image {path}: {exc}") from exc
-            
+
         return img_tensor, class_id, True
 
     @staticmethod
     def _iter_yolo_boxes(bboxes):
-        """Yield ``class_id, xc, yc, width, height`` for parsed YOLO rows."""
         for row in bboxes:
             if len(row) == 4:
                 yield 0, *row
@@ -847,9 +817,7 @@ class BoundingBoxFaceDataset(data.Dataset):
 
 
 class UnifiedWildFaceDataset(data.Dataset):
-    """
-    Unified Dynamic Dataset Loader combining all datastreams with automatic epoch-wise rescanning.
-    """
+    """Unified Dynamic Dataset Loader combining all datastreams."""
     def __init__(self, root_dir: str = None, meta_file: str = None, is_labeled: bool = True, transform=None, is_train: bool = True, image_size=(112, 112), allow_synthetic: bool = False):
         super(UnifiedWildFaceDataset, self).__init__()
         self.root_dir = _require_dataset_root(root_dir, "unified face dataset")
@@ -875,9 +843,6 @@ class UnifiedWildFaceDataset(data.Dataset):
             self.class_to_idx = {}
 
     def rescan(self):
-        """
-        Rescans all sub-datasets to pick up newly arrived parallel file uploads.
-        """
         count = self.primary_ds.rescan()
         self.class_to_idx = getattr(self.primary_ds, "class_to_idx", {})
         return count
@@ -893,14 +858,9 @@ RobustUniversalFaceDataset = UnifiedWildFaceDataset
 WildFaceDataset = NameLabeledFaceDataset
 UnlabeledFaceDataset = UnlabeledWildDataset
 
-class Phase2UnifiedAttributeDataset(data.Dataset):
-    """CelebA-only attribute dataset with real labels and no fake wild labels.
 
-    Attribute supervision is a separate task from identity recognition. Wild
-    images without annotation are intentionally excluded instead of receiving
-    random targets. Occlusion masks are not fabricated here; a future mask
-    dataset can be added as a separate task with its own annotation contract.
-    """
+class Phase2UnifiedAttributeDataset(data.Dataset):
+    """CelebA-only attribute dataset with real labels and no fake wild labels."""
 
     def __init__(self, root_dir: str = None, celeba_dir: str = None, attr_file: str = None,
                  is_train: bool = True, image_size=(112, 112)):

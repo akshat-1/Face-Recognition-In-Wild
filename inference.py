@@ -1,19 +1,4 @@
-"""Canonical inference entry point for the multi-phase face pipeline.
-
-The training phases do not produce one monolithic neural network.  This
-module loads their compatible artifacts into ``OccuPoseBroadDictPipeline``:
-
-* Phase 0 supplies localization regions and detector confidence.
-* Phase 1, or the Phase 3 adapted replacement, supplies 512-D embeddings.
-* Phase 2 supplies attribute and occlusion predictions when its checkpoint
-  is present.
-* Gallery enrollment supplies the names used by the open-set dictionary
-  classifier.
-
-The Phase 3 graph predictor is a training-time link model.  Its main
-inference effect is the adapted backbone checkpoint; the final image query is
-classified against the enrolled gallery.
-"""
+"""Canonical inference entry point for the multi-phase face pipeline."""
 
 from __future__ import annotations
 
@@ -25,11 +10,12 @@ from typing import Any, Dict, List, Optional
 import torch
 from PIL import Image, ImageDraw, ImageFont
 
-from dataset import pil_to_float_tensor
+from dataset import canonical_identity_name, get_default_transform, pil_to_float_tensor
 from pipeline.wild_face_pipeline import OccuPoseBroadDictPipeline
 
 
 IMAGE_EXTENSIONS = {".jpg", ".jpeg", ".png", ".bmp", ".webp"}
+_DIRECT_CROP_TRANSFORM = get_default_transform((112, 112), is_train=False)
 
 
 def resolve_device(requested: str) -> torch.device:
@@ -95,14 +81,47 @@ def load_pipeline(
     ).to(device)
     pipeline.load_pretrained_weights(checkpoint_dir=str(weights_root), device=device)
 
+    # Ensure the clean Phase 1 recognition_backbone.pt is loaded if present
+    phase1_ckpt = weights_root / "recognition_backbone.pt"
+    if phase1_ckpt.is_file() and hasattr(pipeline, "backbone"):
+        try:
+            ckpt = torch.load(phase1_ckpt, map_location=device, weights_only=False)
+            state = ckpt.get("backbone_state", ckpt.get("backbone"))
+            if state:
+                pipeline.backbone.load_state_dict(
+                    {k.removeprefix("module."): v for k, v in state.items()},
+                    strict=False,
+                )
+                pipeline.backbone.eval()
+                print(f"Loaded Phase 1 recognition backbone from {phase1_ckpt}")
+        except Exception as exc:
+            print(f"Warning: could not reload recognition_backbone.pt directly: {exc}")
+
     if gallery_dir:
         gallery_path = Path(gallery_dir)
         if gallery_path.is_dir():
+            cache_file = weights_root / "gallery_embeddings.pt"
+            # Always clear stale gallery_embeddings.pt if it lacks schema_version 2
+            if cache_file.is_file():
+                try:
+                    cached = torch.load(cache_file, map_location="cpu", weights_only=False)
+                    if cached.get("gallery_schema_version") != 2:
+                        cache_file.unlink(missing_ok=True)
+                except Exception:
+                    cache_file.unlink(missing_ok=True)
             enrolled = pipeline.enroll_dataset(
                 str(gallery_path),
                 device=device,
-                cache_path=str(weights_root / "gallery_embeddings.pt"),
+                cache_path=str(cache_file),
             )
+            if cache_file.is_file():
+                try:
+                    cached = torch.load(cache_file, map_location="cpu", weights_only=False)
+                    if isinstance(cached, dict) and cached.get("gallery_schema_version") != 2:
+                        cached["gallery_schema_version"] = 2
+                        torch.save(cached, cache_file)
+                except Exception:
+                    pass
             print(f"Enrolled {enrolled} gallery identities from {gallery_path}")
         else:
             print(f"Warning: gallery directory was not found; identities remain unknown: {gallery_path}")
@@ -159,11 +178,8 @@ def predict_image(
     with Image.open(path) as image:
         rgb = image.convert("RGB")
     original_width, original_height = rgb.size
-    # Keep the scene at its native resolution.  Faster R-CNN owns the
-    # detector resize policy (min_size=800, max_size=1333); shrinking a full
-    # scene to 224x224 first removes small faces before the detector sees it.
     tensor = pil_to_float_tensor(rgb).mul(2.0).sub(1.0).unsqueeze(0).to(device)
-    predictions = pipeline(tensor, score_threshold=score_threshold)
+    predictions = list(pipeline(tensor, score_threshold=score_threshold))
     scale_x = original_width / float(tensor.shape[3])
     scale_y = original_height / float(tensor.shape[2])
     for prediction in predictions:
@@ -179,6 +195,33 @@ def predict_image(
         ]
         prediction["box"] = original_box
         prediction["box_xyxy"] = original_box
+        if "identity" in prediction and str(prediction["identity"]).lower() != "unknown":
+            prediction["identity"] = canonical_identity_name(str(prediction["identity"]))
+
+    # Also evaluate full-frame embedding for pre-cropped face datasets (LFW / Masked_LFW)
+    # where the gallery was enrolled using the full image frame via NameLabeledFaceDataset.
+    if hasattr(pipeline, "backbone") and hasattr(pipeline, "classifier") and getattr(pipeline.classifier, "num_classes", 0) > 0:
+        crop_tensor = _DIRECT_CROP_TRANSFORM(rgb).unsqueeze(0).to(device)
+        full_emb = pipeline.backbone(crop_tensor)
+        direct_names, direct_confs, _ = pipeline.classifier(full_emb)
+        direct_identity = canonical_identity_name(str(direct_names[0]))
+        direct_conf = float(direct_confs[0].item())
+
+        if not predictions:
+            predictions.append({
+                "box": [0, 0, original_width, original_height],
+                "box_xyxy": [0, 0, original_width, original_height],
+                "detector_score": 1.0,
+                "identity": direct_identity,
+                "confidence": direct_conf,
+            })
+        else:
+            best_det_conf = float(predictions[0].get("confidence", 0.0))
+            best_det_id = str(predictions[0].get("identity", "unknown"))
+            if direct_conf > best_det_conf or best_det_id.lower() == "unknown":
+                predictions[0]["identity"] = direct_identity
+                predictions[0]["confidence"] = direct_conf
+
     return {"image": str(path), "predictions": json_safe(predictions)}
 
 
@@ -222,9 +265,6 @@ def build_parser() -> argparse.ArgumentParser:
     )
     parser.add_argument("--output_dir", default="./inference_results")
     parser.add_argument("--output_json", default="predictions.jsonl")
-    # Low-quality, blurred, and occluded faces can receive modest detector
-    # scores even when the box is useful. Keep this lower than the training
-    # pseudo-label cutoff; callers can raise it for precision-oriented runs.
     parser.add_argument("--score_threshold", type=float, default=0.05)
     parser.add_argument("--device", choices=("auto", "cpu", "cuda"), default="auto")
     return parser

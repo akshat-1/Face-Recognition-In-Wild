@@ -9,13 +9,7 @@ import torch.nn.functional as F
 
 
 class BroadFaceCurricularLoss(nn.Module):
-    """Margin classifier plus a detached queue of past face embeddings.
-
-    The queue is deliberately updated by :meth:`enqueue` after the optimizer
-    step. This prevents the old implementation's duplicate current-batch loss
-    and makes checkpoint/resume behavior explicit. Queue examples update the
-    classifier only; the current batch updates both classifier and backbone.
-    """
+    """Margin classifier plus a detached queue of past face embeddings."""
 
     def __init__(
         self,
@@ -28,6 +22,7 @@ class BroadFaceCurricularLoss(nn.Module):
         compensate: bool = True,
         feature_dim: int = None,
         sync_curriculum: bool = True,
+        queue_weight: float = 0.2,
     ):
         super().__init__()
         if feature_dim is not None:
@@ -44,6 +39,7 @@ class BroadFaceCurricularLoss(nn.Module):
         self.queue_size = int(queue_size)
         self.compensate = bool(compensate)
         self.sync_curriculum = bool(sync_curriculum)
+        self.queue_weight = float(queue_weight)
 
         self.weight = nn.Parameter(torch.empty(self.num_classes, self.in_features))
         nn.init.xavier_uniform_(self.weight)
@@ -112,26 +108,29 @@ class BroadFaceCurricularLoss(nn.Module):
         if length == 0:
             return self.feature_mb[:0]
         features = self.feature_mb[:length]
-        labels = self.label_mb[:length]
-        proxies = self.proxy_mb[:length]
-        current_proxy = self.weight.detach()[labels]
         if not self.compensate:
             return features
+        labels = self.label_mb[:length]
+        proxies = F.normalize(self.proxy_mb[:length].float(), p=2, dim=1)
+        current_proxy = F.normalize(self.weight.detach().float(), p=2, dim=1)[labels]
         drift = current_proxy - proxies
-        scale = features.norm(dim=1, keepdim=True) / proxies.norm(dim=1, keepdim=True).clamp_min(1e-7)
-        return features + scale * drift
+        return F.normalize(features.float() + drift, p=2, dim=1)
 
     def forward(self, input_tensor: torch.Tensor, label: torch.Tensor) -> torch.Tensor:
         label = self._validate_labels(label)
         current_loss = self.compute_curricular(input_tensor, label, self.weight)
-        if int(self.queue_length.item()) == 0:
+        length = int(self.queue_length.item())
+        if length == 0 or self.queue_weight <= 0.0:
             return current_loss
 
-        # Queue embeddings are detached, so this term trains the classifier
-        # without backpropagating stale representations into the backbone.
         queue_features = self._compensated_queue().detach()
-        queue_loss = self.compute_curricular(queue_features, self.label_mb[:int(self.queue_length.item())], self.weight, update_curriculum=False)
-        return current_loss + queue_loss
+        queue_loss = self.compute_curricular(
+            queue_features,
+            self.label_mb[:length],
+            self.weight,
+            update_curriculum=False,
+        )
+        return current_loss + self.queue_weight * queue_loss
 
     @torch.no_grad()
     def enqueue(self, embeddings: torch.Tensor, labels: torch.Tensor) -> None:
@@ -152,7 +151,8 @@ class BroadFaceCurricularLoss(nn.Module):
             embeddings = torch.cat(gathered_features, dim=0)
             labels = torch.cat(gathered_labels, dim=0)
 
-        proxies = self.weight.detach()[labels]
+        norm_weight = F.normalize(self.weight.detach().float(), p=2, dim=1)
+        proxies = norm_weight[labels]
         if embeddings.shape[0] >= self.queue_size:
             embeddings = embeddings[-self.queue_size:]
             labels = labels[-self.queue_size:]
@@ -175,8 +175,6 @@ class BroadFaceCurricularLoss(nn.Module):
         self.queue_next.fill_(pointer)
         self.queue_length.fill_(length)
 
-    # Compatibility with existing callers. New training code should use
-    # enqueue() after optimizer.step().
     update = enqueue
 
     @torch.no_grad()
@@ -185,8 +183,10 @@ class BroadFaceCurricularLoss(nn.Module):
         if length == 0:
             return
         labels = self.label_mb[:length]
-        delta = new_weight.detach()[labels] - old_weight.detach()[labels]
-        self.proxy_mb[:length].add_(delta)
+        old_norm = F.normalize(old_weight.detach().float(), p=2, dim=1)
+        new_norm = F.normalize(new_weight.detach().float(), p=2, dim=1)
+        delta = new_norm[labels] - old_norm[labels]
+        self.proxy_mb[:length].copy_(F.normalize(self.proxy_mb[:length] + delta, p=2, dim=1))
 
 
 BroadFaceMemoryQueue = BroadFaceCurricularLoss

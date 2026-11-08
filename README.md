@@ -45,6 +45,39 @@ inference_results/
 └── annotated/              # copies with predicted boxes and labels
 ```
 
+## Benchmark evaluation
+
+Run the complete pipeline once over every dataset under `Evaluation/`:
+
+```bash
+python evaluate_all.py \
+  --data_root Evaluation \
+  --weights_dir weights \
+  --gallery_dir Face_Dataset/name_label \
+  --output_dir evaluation_results \
+  --device cuda \
+  --mode full \
+  --score_threshold 0.05
+```
+
+The runner automatically evaluates WIDER FACE, UFDD, AFW, and DARKFACE when
+their folders are present. It writes `evaluation_report.md` for paper tables,
+`evaluation_report.csv`, `evaluation_report.json`, and one JSONL prediction
+file per dataset under `evaluation_results/`. Annotated datasets report
+precision, recall, F1, AP@IoU=0.50, image coverage, and WIDER-style
+easy/medium/hard AP. Full mode also reports known-versus-unknown recognition
+rates and attribute/occlusion operating counts.
+
+The supplied benchmark annotations contain face boxes but no person identity
+pairs. Consequently, the detection metrics are the accuracy measures that can
+be reported for these datasets; known/unknown rates are diagnostic and are not
+identity-recognition accuracy. DARKFACE is reported as inference-only unless
+ground-truth annotations are added.
+
+Use `--mode detector` for a faster localization-only benchmark. Genuine versus
+impostor identity verification requires a pair protocol and can be evaluated
+with `evaluate_verification.py` after exporting embeddings.
+
 For a detector-only diagnostic, which is useful when recognition returns no
 identity, run:
 
